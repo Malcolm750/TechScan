@@ -5,8 +5,7 @@ import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, Ale
 const mockSupabase = {
   articles: [
     { code_barre: '3165140818235', designation: 'Perceuse Visseuse GSR 12V-15', categorie: 'Outillage Électroportatif', reference: '0601868101', fabricant: 'Bosch Professional', caracteristiques: { tension: '12V', poids: '0.95 kg' }, photo: 'https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&q=80&w=600' },
-    { code_barre: '7316577023101', designation: 'Roulement à billes rigide', categorie: 'Mécanique', reference: '6204-2Z', fabricant: 'SKF', caracteristiques: { diametre_int: '20mm', diametre_ext: '47mm' }, photo: 'https://images.unsplash.com/photo-1585252814886-f61b0cba001a?auto=format&fit=crop&q=80&w=600' },
-    { code_barre: '4011209355745', designation: 'Disjoncteur modulaire 16A', categorie: 'Électricité', reference: 'MBN116', fabricant: 'Hager', caracteristiques: { poles: '1P+N', courbe: 'C' }, photo: 'https://images.unsplash.com/photo-1621905252507-b35492cc74b4?auto=format&fit=crop&q=80&w=600' }
+    { code_barre: '7316577023101', designation: 'Roulement à billes rigide', categorie: 'Mécanique', reference: '6204-2Z', fabricant: 'SKF', caracteristiques: { diametre_int: '20mm', diametre_ext: '47mm' }, photo: 'https://images.unsplash.com/photo-1585252814886-f61b0cba001a?auto=format&fit=crop&q=80&w=600' }
   ],
   articles_a_creer: []
 };
@@ -33,7 +32,7 @@ export default function App() {
     }
   }, []);
 
-  // Simuler la recherche dans la base
+  // Fonction de recherche de l'article
   const handleSearch = (code) => {
     setIsScanning(true);
     // Simulation du délai réseau
@@ -48,7 +47,7 @@ export default function App() {
         setScannedCode(code);
         setViewState('not-found');
       }
-    }, 600);
+    }, 400); // 400ms pour faire "vrai"
   };
 
   const addToHistory = (product) => {
@@ -58,10 +57,58 @@ export default function App() {
     localStorage.setItem('techscan_history', JSON.stringify(newHistory));
   };
 
-  // Gestion de la caméra (Simulation)
+  // --- MOTEUR DE SCAN CODE BARRE NATIVE ---
   useEffect(() => {
     let stream = null;
-    if ((viewState === 'camera' || viewState === 'take-photo') && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    let scanInterval = null;
+
+    const startScanner = async () => {
+      if (viewState === 'camera' && videoRef.current && navigator.mediaDevices) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            
+            // Si l'API native de détection de code-barres est supportée (ex: Chrome Android)
+            if ('BarcodeDetector' in window) {
+              const barcodeDetector = new window.BarcodeDetector();
+              scanInterval = setInterval(async () => {
+                if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+                  try {
+                    const barcodes = await barcodeDetector.detect(videoRef.current);
+                    if (barcodes.length > 0 && !isScanning) {
+                      const code = barcodes[0].rawValue;
+                      clearInterval(scanInterval);
+                      handleSearch(code);
+                    }
+                  } catch (e) {
+                    // Ignorer les erreurs de frame
+                  }
+                }
+              }, 300);
+            }
+          }
+        } catch (err) {
+          console.error("Erreur d'accès à la caméra:", err);
+        }
+      }
+    };
+
+    startScanner();
+
+    // Nettoyage quand on quitte l'écran de scan
+    return () => {
+      if (scanInterval) clearInterval(scanInterval);
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [viewState, isScanning]);
+
+  // --- MOTEUR APPAREIL PHOTO SIMPLE (Pour produit introuvable) ---
+  useEffect(() => {
+    let stream = null;
+    if (viewState === 'take-photo' && navigator.mediaDevices) {
       navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
         .then(s => {
           stream = s;
@@ -69,13 +116,10 @@ export default function App() {
             videoRef.current.srcObject = stream;
           }
         })
-        .catch(err => console.log("Erreur accès caméra ou pas de caméra dispo sur cet appareil:", err));
+        .catch(err => console.error("Erreur photo:", err));
     }
-    
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      if (stream) stream.getTracks().forEach(track => track.stop());
     };
   }, [viewState]);
 
@@ -84,24 +128,11 @@ export default function App() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
       
-      // Si la vidéo n'est pas chargée (ex: pas de webcam sur le PC), on simule une photo grise
-      if(video.videoWidth === 0) {
-        canvas.width = 600;
-        canvas.height = 400;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#475569';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '30px Arial';
-        ctx.fillText('Photo simulée', 200, 200);
-      } else {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      }
+      canvas.width = video.videoWidth || 600;
+      canvas.height = video.videoHeight || 400;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      const photoDataUrl = canvas.toDataURL('image/jpeg');
-      setCapturedPhoto(photoDataUrl);
+      setCapturedPhoto(canvas.toDataURL('image/jpeg'));
       setViewState('photo-preview');
     }
   };
@@ -112,6 +143,7 @@ export default function App() {
       photo: capturedPhoto,
       date: new Date().toISOString()
     });
+    alert("Article enregistré dans la file d'attente !");
     resetToScan();
   };
 
@@ -127,7 +159,7 @@ export default function App() {
 
   const renderCameraView = () => (
     <div className="relative w-full h-full bg-slate-900 overflow-hidden flex flex-col justify-center items-center">
-      <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover opacity-60" />
+      <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover opacity-60" />
       
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="w-3/4 max-w-md aspect-video border-2 border-white/30 rounded-xl relative">
@@ -152,14 +184,15 @@ export default function App() {
         </button>
       </div>
 
-      <div className="absolute bottom-10 w-full px-8 flex flex-col md:flex-row justify-between items-center md:items-end gap-6">
+      <div className="absolute bottom-10 w-full px-8 flex flex-col md:flex-row justify-center items-center gap-6">
          <button onClick={() => setViewState('manual-entry')} className="bg-white/10 border border-white/20 backdrop-blur-md text-white px-6 py-4 rounded-2xl flex items-center gap-3 font-semibold hover:bg-white/20 transition shadow-xl">
             <Search size={24} />
             Saisie manuelle
          </button>
          
+         {/* Boutons de simulation pour les appareils ne supportant pas la caméra native */}
          <div className="flex flex-col gap-2 bg-black/60 p-4 rounded-2xl border border-white/10 backdrop-blur-md">
-            <span className="text-white/80 text-sm font-semibold mb-1 text-center md:text-right">Boutons de simulation (Test) :</span>
+            <span className="text-white/80 text-sm font-semibold mb-1 text-center">Boutons de simulation (Test) :</span>
             <div className="flex gap-2">
               <button onClick={() => handleSearch('3165140818235')} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-3 rounded-xl font-bold shadow-lg transition">Produit Connu</button>
               <button onClick={() => handleSearch('1234567890123')} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-3 rounded-xl font-bold border border-slate-500 transition">Produit Inconnu</button>
@@ -316,7 +349,6 @@ export default function App() {
         <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
         <canvas ref={canvasRef} className="hidden" />
         
-        {/* Guide de cadrage photo */}
         <div className="absolute inset-0 border-[15px] border-black/40 pointer-events-none"></div>
         <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl pointer-events-none flex items-center justify-center">
           <span className="bg-black/50 text-white px-4 py-2 rounded-full backdrop-blur-sm text-sm font-bold">Cadrez la pièce technique</span>
@@ -404,7 +436,6 @@ export default function App() {
   return (
     <div className="flex h-screen w-full bg-slate-900 font-sans text-slate-900 overflow-hidden">
       
-      {/* Sidebar de navigation (Tablette) / Bottom bar (Mobile) */}
       <nav className={`
         bg-white border-slate-200 flex z-50
         max-md:fixed max-md:bottom-0 max-md:w-full max-md:flex-row max-md:h-24 max-md:border-t max-md:justify-around max-md:items-center max-md:pb-4
