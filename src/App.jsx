@@ -1,22 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle } from 'lucide-react';
 
-// ==========================================
-// ⚠️ CODE DE PRODUCTION - INSTRUCTIONS :
-// ==========================================
-// Dans votre véritable projet (StackBlitz, VSCode, Vercel), vous devez :
-// 1. Installer la librairie : npm install @supabase/supabase-js
-// 2. DÉCOMMENTER les 4 lignes ci-dessous pour activer la vraie base de données :
+import { createClient } from '@supabase/supabase-js';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-// import { createClient } from '@supabase/supabase-js';
-// const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-// const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-// const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Ligne temporaire pour permettre à cet aperçu visuel de fonctionner sans erreur de compilation.
-// (À SUPPRIMER dans votre vrai projet).
-const supabase = null; 
-// ==========================================
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('scan');
