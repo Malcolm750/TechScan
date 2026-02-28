@@ -1,14 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle } from 'lucide-react';
 
-// --- FAUSSE BASE DE DONNÉES (Pour le prototype) ---
-const mockSupabase = {
-  articles: [
-    { code_barre: '3165140818235', designation: 'Perceuse Visseuse GSR 12V-15', categorie: 'Outillage Électroportatif', reference: '0601868101', fabricant: 'Bosch Professional', caracteristiques: { tension: '12V', poids: '0.95 kg' }, photo: 'https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&q=80&w=600' },
-    { code_barre: '7316577023101', designation: 'Roulement à billes rigide', categorie: 'Mécanique', reference: '6204-2Z', fabricant: 'SKF', caracteristiques: { diametre_int: '20mm', diametre_ext: '47mm' }, photo: 'https://images.unsplash.com/photo-1585252814886-f61b0cba001a?auto=format&fit=crop&q=80&w=600' }
-  ],
-  articles_a_creer: []
-};
+// ==========================================
+// ⚠️ CODE DE PRODUCTION - INSTRUCTIONS :
+// ==========================================
+// Dans votre véritable projet (StackBlitz, VSCode, Vercel), vous devez :
+// 1. Installer la librairie : npm install @supabase/supabase-js
+// 2. DÉCOMMENTER les 4 lignes ci-dessous pour activer la vraie base de données :
+
+// import { createClient } from '@supabase/supabase-js';
+// const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+// const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Ligne temporaire pour permettre à cet aperçu visuel de fonctionner sans erreur de compilation.
+// (À SUPPRIMER dans votre vrai projet).
+const supabase = null; 
+// ==========================================
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('scan');
@@ -24,7 +32,7 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Charger l'historique au démarrage
+  // Charger l'historique local au démarrage
   useEffect(() => {
     const savedHistory = localStorage.getItem('techscan_history');
     if (savedHistory) {
@@ -32,13 +40,30 @@ export default function App() {
     }
   }, []);
 
-  // Fonction de recherche de l'article
-  const handleSearch = (code) => {
+  // --- RECHERCHE DANS LA VRAIE BASE SUPABASE ---
+  const handleSearch = async (code) => {
     setIsScanning(true);
-    // Simulation du délai réseau
-    setTimeout(() => {
+    
+    // Protection pour l'aperçu si Supabase n'est pas activé
+    if (!supabase) {
+      alert("Mode Production : Dans votre vrai projet avec les lignes décommentées, ce code ira interroger Supabase pour le code " + code);
       setIsScanning(false);
-      const product = mockSupabase.articles.find(a => a.code_barre === code || a.reference === code);
+      setScannedCode(code);
+      setViewState('not-found');
+      return;
+    }
+
+    try {
+      const { data: product, error } = await supabase
+        .from('articles')
+        .select('*')
+        .eq('code_barre', code)
+        .maybeSingle(); // Retourne null si aucun article n'est trouvé
+        
+      if (error) throw error;
+
+      setIsScanning(false);
+
       if (product) {
         setCurrentProduct(product);
         setViewState('product');
@@ -47,7 +72,11 @@ export default function App() {
         setScannedCode(code);
         setViewState('not-found');
       }
-    }, 400); // 400ms pour faire "vrai"
+    } catch (error) {
+      console.error("Erreur lors de la recherche Supabase:", error);
+      setIsScanning(false);
+      alert("Erreur de connexion à la base de données. Vérifiez votre réseau.");
+    }
   };
 
   const addToHistory = (product) => {
@@ -57,7 +86,7 @@ export default function App() {
     localStorage.setItem('techscan_history', JSON.stringify(newHistory));
   };
 
-  // --- MOTEUR DE SCAN CODE BARRE NATIVE ---
+  // --- MOTEUR DE SCAN CODE BARRE NATIF ---
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
@@ -69,7 +98,6 @@ export default function App() {
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             
-            // Si l'API native de détection de code-barres est supportée (ex: Chrome Android)
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
@@ -82,7 +110,7 @@ export default function App() {
                       handleSearch(code);
                     }
                   } catch (e) {
-                    // Ignorer les erreurs de frame
+                    // Ignorer les petites erreurs de frame vidéo
                   }
                 }
               }, 300);
@@ -96,7 +124,6 @@ export default function App() {
 
     startScanner();
 
-    // Nettoyage quand on quitte l'écran de scan
     return () => {
       if (scanInterval) clearInterval(scanInterval);
       if (stream) {
@@ -105,7 +132,7 @@ export default function App() {
     };
   }, [viewState, isScanning]);
 
-  // --- MOTEUR APPAREIL PHOTO SIMPLE (Pour produit introuvable) ---
+  // --- MOTEUR APPAREIL PHOTO (Article Introuvable) ---
   useEffect(() => {
     let stream = null;
     if (viewState === 'take-photo' && navigator.mediaDevices) {
@@ -132,19 +159,36 @@ export default function App() {
       canvas.height = video.videoHeight || 400;
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      setCapturedPhoto(canvas.toDataURL('image/jpeg'));
+      setCapturedPhoto(canvas.toDataURL('image/jpeg')); // Qualité JPEG pour réduire le poids
       setViewState('photo-preview');
     }
   };
 
-  const saveNewArticle = () => {
-    mockSupabase.articles_a_creer.push({
-      code_barre: scannedCode,
-      photo: capturedPhoto,
-      date: new Date().toISOString()
-    });
-    alert("Article enregistré dans la file d'attente !");
-    resetToScan();
+  // --- SAUVEGARDE DANS LA VRAIE BASE SUPABASE ---
+  const saveNewArticle = async () => {
+    if (!supabase) {
+      alert("Mode Production : Ce bouton sauvegardera l'image en base64 dans la table 'articles_a_creer'.");
+      resetToScan();
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('articles_a_creer')
+        .insert([{ 
+          code_barre: scannedCode, 
+          photo_base64: capturedPhoto, 
+          statut: 'en_attente'
+        }]);
+        
+      if (error) throw error;
+      
+      alert("Article enregistré dans la file d'attente ! L'équipe pourra le traiter.");
+      resetToScan();
+    } catch (error) {
+      console.error("Erreur lors de l'enregistrement Supabase:", error);
+      alert("Erreur lors de la sauvegarde. Vérifiez votre connexion.");
+    }
   };
 
   const resetToScan = () => {
@@ -155,7 +199,7 @@ export default function App() {
     setCapturedPhoto(null);
   };
 
-  // --- VUES ---
+  // --- VUES DE L'APPLICATION ---
 
   const renderCameraView = () => (
     <div className="relative w-full h-full bg-slate-900 overflow-hidden flex flex-col justify-center items-center">
@@ -184,20 +228,11 @@ export default function App() {
         </button>
       </div>
 
-      <div className="absolute bottom-10 w-full px-8 flex flex-col md:flex-row justify-center items-center gap-6">
+      <div className="absolute bottom-10 w-full px-8 flex justify-center items-center">
          <button onClick={() => setViewState('manual-entry')} className="bg-white/10 border border-white/20 backdrop-blur-md text-white px-6 py-4 rounded-2xl flex items-center gap-3 font-semibold hover:bg-white/20 transition shadow-xl">
             <Search size={24} />
             Saisie manuelle
          </button>
-         
-         {/* Boutons de simulation pour les appareils ne supportant pas la caméra native */}
-         <div className="flex flex-col gap-2 bg-black/60 p-4 rounded-2xl border border-white/10 backdrop-blur-md">
-            <span className="text-white/80 text-sm font-semibold mb-1 text-center">Boutons de simulation (Test) :</span>
-            <div className="flex gap-2">
-              <button onClick={() => handleSearch('3165140818235')} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-3 rounded-xl font-bold shadow-lg transition">Produit Connu</button>
-              <button onClick={() => handleSearch('1234567890123')} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-3 rounded-xl font-bold border border-slate-500 transition">Produit Inconnu</button>
-            </div>
-         </div>
       </div>
     </div>
   );
@@ -210,7 +245,7 @@ export default function App() {
       
       <div className="max-w-xl mx-auto w-full flex-1 flex flex-col justify-center">
         <h2 className="text-4xl font-extrabold text-slate-800 mb-3">Saisie manuelle</h2>
-        <p className="text-lg text-slate-500 mb-10">Entrez le code-barres ou la référence de l'article technique.</p>
+        <p className="text-lg text-slate-500 mb-10">Entrez le code-barres de l'article technique.</p>
         
         <div className="bg-white p-3 rounded-2xl shadow-sm border-2 border-slate-200 flex items-center focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/20 transition-all mb-8">
           <input 
@@ -242,61 +277,75 @@ export default function App() {
 
   const renderProductCard = () => {
     if (!currentProduct) return null;
+    
+    const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
+    
     return (
       <div className="w-full h-full bg-slate-100 overflow-y-auto pb-24 animate-in slide-in-from-bottom-10 duration-300">
         <div className="relative h-80 bg-white flex justify-center items-center shadow-sm">
            <button onClick={resetToScan} className="absolute top-6 left-6 p-4 rounded-full bg-white/90 backdrop-blur shadow-lg text-slate-800 z-10 hover:bg-slate-100 transition">
              <X size={28} />
            </button>
-           <img src={currentProduct.photo} alt={currentProduct.designation} className="h-full w-full object-cover" />
-           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+           <img src={displayImage} alt={currentProduct.designation || 'Article'} className="h-full w-full object-cover" />
+           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent"></div>
+           
+           {currentProduct.statut && (
+             <div className="absolute top-6 right-6">
+                <span className={`px-4 py-2 rounded-full text-sm font-bold shadow-lg backdrop-blur-md ${currentProduct.statut === 'Actif' ? 'bg-green-500/90 text-white' : 'bg-red-500/90 text-white'}`}>
+                  {currentProduct.statut}
+                </span>
+             </div>
+           )}
+
            <div className="absolute bottom-0 left-0 right-0 p-8">
-              <span className="inline-block px-4 py-1.5 bg-blue-600 text-white text-sm font-bold rounded-full mb-3 shadow-lg">
-                {currentProduct.categorie}
-              </span>
-              <h1 className="text-4xl font-extrabold text-white leading-tight drop-shadow-md">{currentProduct.designation}</h1>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                {currentProduct.groupe && <span className="px-3 py-1 bg-white/20 backdrop-blur border border-white/30 text-white text-xs font-bold rounded-full">{currentProduct.groupe}</span>}
+                {currentProduct.famille && <span className="text-white/50 text-xs font-bold">&gt;</span>}
+                {currentProduct.famille && <span className="px-3 py-1 bg-white/20 backdrop-blur border border-white/30 text-white text-xs font-bold rounded-full">{currentProduct.famille}</span>}
+                {currentProduct.type && <span className="text-white/50 text-xs font-bold">&gt;</span>}
+                {currentProduct.type && <span className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded-full shadow-lg">{currentProduct.type}</span>}
+              </div>
+              <h1 className="text-4xl font-extrabold text-white leading-tight drop-shadow-md">{currentProduct.designation || 'Désignation inconnue'}</h1>
            </div>
         </div>
 
         <div className="max-w-4xl mx-auto p-6 space-y-6 -mt-6 relative z-20">
-          <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 flex items-center justify-between">
-            <div className="flex-1">
-              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Fabricant</p>
-              <p className="text-2xl font-black text-slate-800">{currentProduct.fabricant}</p>
+          <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 flex flex-wrap md:flex-nowrap items-center justify-between gap-4">
+            <div className="flex-1 min-w-[150px]">
+              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Marque</p>
+              <p className="text-2xl font-black text-slate-800">{currentProduct.marque || 'N/A'}</p>
             </div>
-            <div className="h-16 w-px bg-slate-200 mx-6"></div>
-            <div className="flex-1 text-right">
-              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Réf. Interne</p>
-              <p className="text-2xl font-mono font-bold text-slate-800">{currentProduct.reference}</p>
+            <div className="hidden md:block h-16 w-px bg-slate-200 mx-4"></div>
+            <div className="flex-1 min-w-[150px] md:text-center border-l border-slate-200 pl-4 md:border-none md:pl-0">
+              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Réf. Fabricant</p>
+              <p className="text-2xl font-mono font-bold text-slate-800">{currentProduct.reference_fabricant || 'N/A'}</p>
+            </div>
+            <div className="hidden md:block h-16 w-px bg-slate-200 mx-4"></div>
+            <div className="w-full md:w-auto md:text-right mt-4 md:mt-0 bg-slate-50 md:bg-transparent p-4 md:p-0 rounded-xl">
+              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Code Barre</p>
+              <p className="text-xl font-mono font-bold text-slate-800">{currentProduct.code_barre}</p>
             </div>
           </div>
 
           <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
             <h3 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-3 border-b border-slate-100 pb-4">
               <Package className="text-blue-500" size={28} />
-              Caractéristiques techniques
+              Détails de l'article
             </h3>
-            <div className="grid grid-cols-2 gap-6">
-              {Object.entries(currentProduct.caracteristiques).map(([key, value]) => (
-                <div key={key} className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                  <span className="block text-xs text-slate-400 uppercase font-bold mb-2 tracking-wider">{key.replace('_', ' ')}</span>
-                  <span className="block text-xl font-bold text-slate-800">{value}</span>
-                </div>
-              ))}
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                <span className="block text-xs text-slate-400 uppercase font-bold mb-2 tracking-wider">Site de rattachement</span>
+                <span className="block text-lg font-bold text-slate-800">{currentProduct.site_rattachement || 'Non défini'}</span>
+              </div>
+              
+              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                <span className="block text-xs text-slate-400 uppercase font-bold mb-2 tracking-wider">Date de création</span>
+                <span className="block text-lg font-bold text-slate-800">
+                  {currentProduct.date_creation ? new Date(currentProduct.date_creation).toLocaleDateString('fr-FR') : 'Inconnue'}
+                </span>
+              </div>
             </div>
-          </div>
-          
-          <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 flex justify-between items-center">
-             <div>
-                <p className="text-sm text-slate-500 font-bold uppercase tracking-wider mb-1">Code Barre scanné</p>
-                <p className="text-xl font-mono font-bold text-slate-800">{currentProduct.code_barre}</p>
-             </div>
-             {/* Faux code barre visuel */}
-             <div className="flex gap-1 h-12 opacity-40 grayscale">
-               {[...Array(20)].map((_, i) => (
-                 <div key={i} className="bg-black h-full" style={{width: `${Math.random() * 4 + 1}px`}}></div>
-               ))}
-             </div>
           </div>
         </div>
       </div>
@@ -418,10 +467,10 @@ export default function App() {
               }}
               className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6 cursor-pointer hover:shadow-md hover:border-blue-200 transition-all active:scale-[0.98]"
             >
-              <img src={item.photo} alt={item.designation} className="w-20 h-20 rounded-2xl object-cover bg-slate-100 border border-slate-100" />
+              <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt={item.designation} className="w-20 h-20 rounded-2xl object-cover bg-slate-100 border border-slate-100" />
               <div className="flex-1 min-w-0">
-                <h4 className="text-xl font-bold text-slate-800 truncate mb-1">{item.designation}</h4>
-                <p className="text-md text-slate-500 truncate font-medium">{item.fabricant} <span className="text-slate-300 mx-2">•</span> {item.reference}</p>
+                <h4 className="text-xl font-bold text-slate-800 truncate mb-1">{item.designation || 'Article'}</h4>
+                <p className="text-md text-slate-500 truncate font-medium">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-2">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
               </div>
               <div className="text-right pl-4 hidden sm:block">
                 <span className="text-sm font-mono font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg">{item.code_barre}</span>
