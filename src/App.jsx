@@ -6,6 +6,8 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
+const supabase = null;
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -23,7 +25,7 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
-  // NOUVEAU: État pour gérer le "tiroir" (Bottom Sheet) façon Yuka
+  // État pour gérer le "tiroir" (Bottom Sheet) façon Yuka
   const [isProductExpanded, setIsProductExpanded] = useState(false);
 
   const [history, setHistory] = useState([]);
@@ -35,11 +37,13 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les scintillements) ---
-  const stateRef = useRef({ viewState, isScanning });
+  // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les scintillements et gère le délai de 2s) ---
+  const stateRef = useRef({ viewState, isScanning, scannedCode: '', lastScanTime: 0 });
   useEffect(() => {
-    stateRef.current = { viewState, isScanning };
-  }, [viewState, isScanning]);
+    stateRef.current.viewState = viewState;
+    stateRef.current.isScanning = isScanning;
+    stateRef.current.scannedCode = scannedCode;
+  }, [viewState, isScanning, scannedCode]);
 
   // --- 1. GESTION DE L'AUTHENTIFICATION ---
   useEffect(() => {
@@ -99,11 +103,11 @@ export default function App() {
 
   const handleSearch = async (code) => {
     setIsScanning(true);
+    setScannedCode(code);
     
     if (!supabase) {
       alert("Mode Production requis. En vrai, la fiche produit s'afficherait en bas de l'écran.");
       setIsScanning(false);
-      setScannedCode(code);
       setViewState('not-found');
       return;
     }
@@ -130,11 +134,10 @@ export default function App() {
 
       if (product) {
         setCurrentProduct(product);
-        setIsProductExpanded(false); // Affiche la carte compacte en bas
+        setIsProductExpanded(false); // Affiche la carte compacte en bas (Tiroir)
         setViewState('product');
         addToHistory(product);
       } else {
-        setScannedCode(code);
         setViewState('not-found');
       }
     } catch (error) {
@@ -145,6 +148,7 @@ export default function App() {
 
   const addToHistory = (product) => {
     const newEntry = { ...product, scanDate: new Date().toISOString() };
+    // On filtre l'historique pour enlever l'article s'il y était déjà, et on ajoute le nouveau scan tout en haut
     const newHistory = [newEntry, ...history.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
     setHistory(newHistory);
     localStorage.setItem('techscan_history', JSON.stringify(newHistory));
@@ -166,13 +170,23 @@ export default function App() {
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
-                // On ne scanne QUE si on est en mode 'camera' pur (pas quand la fiche produit est ouverte)
-                if (stateRef.current.viewState === 'camera' && !stateRef.current.isScanning && videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+                
+                // On scanne en continu si la caméra est affichée
+                if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product') && !stateRef.current.isScanning && videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
                   try {
                     const barcodes = await barcodeDetector.detect(videoRef.current);
                     if (barcodes.length > 0) {
                       const code = barcodes[0].rawValue;
-                      handleSearch(code);
+                      const now = Date.now();
+                      
+                      // LOGIQUE YUKA : 
+                      // 1. Si c'est un NOUVEAU code, on cherche instantanément.
+                      // 2. Si c'est le MÊME code, on attend 2 secondes avant de relancer une recherche.
+                      if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2000)) {
+                         stateRef.current.scannedCode = code;
+                         stateRef.current.lastScanTime = now;
+                         handleSearch(code);
+                      }
                     }
                   } catch (e) { /* silent */ }
                 }
@@ -191,7 +205,7 @@ export default function App() {
       if (scanInterval) clearInterval(scanInterval);
       if (stream) stream.getTracks().forEach(track => track.stop());
     };
-  }, [activeTab, session]); // Retrait de viewState pour éviter le redémarrage de la caméra
+  }, [activeTab, session]); 
 
   const takePicture = () => {
     if (videoRef.current && canvasRef.current) {
@@ -304,7 +318,7 @@ export default function App() {
     <div className="absolute inset-0 w-full h-full bg-slate-900 overflow-hidden flex flex-col justify-center items-center">
       <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover opacity-80" />
       
-      {/* Cadre de visée visible uniquement si on est vraiment en mode scan */}
+      {/* Cadre de visée visible uniquement si on est vraiment en mode scan pur */}
       {viewState === 'camera' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="w-3/4 max-w-md aspect-video border-2 border-white/30 rounded-xl relative">
@@ -340,108 +354,144 @@ export default function App() {
     </div>
   );
 
-  // --- OVERLAY: AFFICHAGE DU PRODUIT (YUKA STYLE) ---
+  // --- OVERLAY: AFFICHAGE DU PRODUIT (STYLE YUKA) ---
   const renderProductOverlay = () => {
     if (!currentProduct) return null;
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
-      // MODE COMPACT (Tiroir en bas de l'écran)
+      // 1. MODE COMPACT (Tiroir en bas de l'écran)
       return (
         <div 
           className="absolute bottom-0 left-0 right-0 bg-white md:rounded-tl-[2.5rem] rounded-t-[2rem] shadow-[0_-15px_50px_rgba(0,0,0,0.25)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-8 max-md:pb-28"
           onClick={() => setIsProductExpanded(true)}
         >
           <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
-          <div className="p-6 pt-2 flex gap-5 items-center">
-            <img src={displayImage} alt="..." className="w-24 h-24 md:w-32 md:h-32 rounded-2xl object-cover border border-slate-100 shadow-sm shrink-0" />
-            <div className="flex-1 min-w-0">
-               <p className="text-sm font-mono font-bold text-slate-400 mb-1">{currentProduct.code_barre}</p>
-               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">{currentProduct.designation || 'Article'}</h3>
-               <p className="text-md font-medium text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'} {currentProduct.reference_fabricant ? `• ${currentProduct.reference_fabricant}` : ''}</p>
+          
+          <div className="p-5 flex gap-4 items-center">
+            {/* Image en ENTIER (object-contain) */}
+            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl shadow-sm flex items-center justify-center shrink-0 p-2">
+              <img src={displayImage} alt="..." className="max-w-full max-h-full object-contain" />
             </div>
-            <button 
-               onClick={(e) => { e.stopPropagation(); resetToScan(); }} 
-               className="p-3 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition ml-2 shrink-0"
-            >
-              <X size={24} />
-            </button>
+            
+            {/* Infos rapides */}
+            <div className="flex-1 min-w-0 flex flex-col justify-center">
+               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">{currentProduct.designation || 'Article'}</h3>
+               <p className="text-md font-medium text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'}</p>
+               <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
+            </div>
+            
+            {/* Badge de statut style Yuka */}
+            <div className="flex flex-col items-center justify-center shrink-0 ml-2">
+               <div className={`w-4 h-4 rounded-full mb-1 ${currentProduct.statut === 'Actif' ? 'bg-green-500' : currentProduct.statut ? 'bg-orange-500' : 'bg-slate-300'}`}></div>
+               <span className="text-[10px] font-bold text-slate-500 uppercase">{currentProduct.statut || 'Info'}</span>
+            </div>
           </div>
         </div>
       );
     }
 
-    // MODE PLEIN ÉCRAN (Fiche détaillée)
+    // 2. MODE PLEIN ÉCRAN (Fiche détaillée lisible)
     return (
-      <div className="absolute inset-0 bg-slate-100 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0">
-        <div className="relative h-80 bg-white flex justify-center items-center shadow-sm">
+      <div className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0">
+        
+        {/* Header avec bouton retour et image ENTIÈRE */}
+        <div className="relative h-72 bg-white flex justify-center items-center shadow-sm p-8 pt-16 border-b border-slate-100">
            <button 
              onClick={(e) => { 
                 e.stopPropagation(); 
-                // Si on vient de l'historique, on ferme tout. Sinon on réduit le tiroir.
                 activeTab === 'history' ? resetToScan() : setIsProductExpanded(false); 
              }} 
-             className="absolute top-6 left-6 p-4 rounded-full bg-white/90 backdrop-blur shadow-lg text-slate-800 z-10 hover:bg-slate-100 transition"
+             className="absolute top-6 left-6 p-3 rounded-full bg-slate-100 text-slate-800 z-10 hover:bg-slate-200 transition"
            >
-             {activeTab === 'history' ? <ArrowLeft size={28} /> : <ChevronDown size={28} />}
+             {activeTab === 'history' ? <ArrowLeft size={24} /> : <ChevronDown size={24} />}
            </button>
            
-           <img src={displayImage} alt={currentProduct.designation || 'Article'} className="h-full w-full object-cover" />
-           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent"></div>
-           
-           {currentProduct.statut && (
-             <div className="absolute top-6 right-6">
-                <span className={`px-4 py-2 rounded-full text-sm font-bold shadow-lg backdrop-blur-md ${currentProduct.statut === 'Actif' ? 'bg-green-500/90 text-white' : 'bg-red-500/90 text-white'}`}>{currentProduct.statut}</span>
-             </div>
-           )}
-
-           <div className="absolute bottom-0 left-0 right-0 p-8">
-              <div className="flex flex-wrap items-center gap-2 mb-3">
-                {currentProduct.groupe && <span className="px-3 py-1 bg-white/20 backdrop-blur border border-white/30 text-white text-xs font-bold rounded-full">{currentProduct.groupe}</span>}
-                {currentProduct.famille && <span className="text-white/50 text-xs font-bold">&gt;</span>}
-                {currentProduct.famille && <span className="px-3 py-1 bg-white/20 backdrop-blur border border-white/30 text-white text-xs font-bold rounded-full">{currentProduct.famille}</span>}
-                {currentProduct.type && <span className="text-white/50 text-xs font-bold">&gt;</span>}
-                {currentProduct.type && <span className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded-full shadow-lg">{currentProduct.type}</span>}
-              </div>
-              <h1 className="text-4xl font-extrabold text-white leading-tight drop-shadow-md">{currentProduct.designation || 'Désignation inconnue'}</h1>
-           </div>
+           <img src={displayImage} alt={currentProduct.designation} className="max-w-full max-h-full object-contain drop-shadow-sm" />
         </div>
 
-        <div className="max-w-4xl mx-auto p-6 space-y-6 -mt-6 relative z-20">
-          <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 flex flex-wrap md:flex-nowrap items-center justify-between gap-4">
-            <div className="flex-1 min-w-[150px]">
-              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Marque</p>
-              <p className="text-2xl font-black text-slate-800">{currentProduct.marque || 'N/A'}</p>
-            </div>
-            <div className="hidden md:block h-16 w-px bg-slate-200 mx-4"></div>
-            <div className="flex-1 min-w-[150px] md:text-center border-l border-slate-200 pl-4 md:border-none md:pl-0">
-              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Réf. Fabricant</p>
-              <p className="text-2xl font-mono font-bold text-slate-800">{currentProduct.reference_fabricant || 'N/A'}</p>
-            </div>
-            <div className="hidden md:block h-16 w-px bg-slate-200 mx-4"></div>
-            <div className="w-full md:w-auto md:text-right mt-4 md:mt-0 bg-slate-50 md:bg-transparent p-4 md:p-0 rounded-xl">
-              <p className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Code Barre</p>
-              <p className="text-xl font-mono font-bold text-slate-800">{currentProduct.code_barre}</p>
-            </div>
-          </div>
-          
-          <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
-            <h3 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-3 border-b border-slate-100 pb-4">
-              <Package className="text-blue-500" size={28} /> Détails de l'article
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                <span className="block text-xs text-slate-400 uppercase font-bold mb-2 tracking-wider">Site de rattachement</span>
-                <span className="block text-lg font-bold text-slate-800">{currentProduct.site_rattachement || 'Non défini'}</span>
+        <div className="max-w-3xl mx-auto -mt-4 relative z-20 px-4 space-y-4">
+           
+           {/* Carte 1 : Titre principal & Score/Statut */}
+           <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-4 gap-4">
+                 <div className="flex-1">
+                    <h1 className="text-3xl md:text-4xl font-black text-slate-800 leading-tight">{currentProduct.designation || 'Article'}</h1>
+                    <p className="text-lg text-slate-500 font-medium mt-1">{currentProduct.marque || 'Marque N/A'}</p>
+                 </div>
+                 
+                 {/* Le gros macaron de statut */}
+                 {currentProduct.statut && (
+                   <div className={`px-4 py-3 rounded-2xl flex flex-col items-center justify-center shadow-sm shrink-0 border ${currentProduct.statut === 'Actif' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
+                      <span className="text-sm font-black uppercase tracking-wider">{currentProduct.statut}</span>
+                   </div>
+                 )}
               </div>
-              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                <span className="block text-xs text-slate-400 uppercase font-bold mb-2 tracking-wider">Date de création</span>
-                <span className="block text-lg font-bold text-slate-800">
-                  {currentProduct.date_creation ? new Date(currentProduct.date_creation).toLocaleDateString('fr-FR') : 'Inconnue'}
-                </span>
+              
+              {/* Fil d'Ariane (Familles) */}
+              <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-slate-100">
+                {currentProduct.groupe && <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">{currentProduct.groupe}</span>}
+                {currentProduct.famille && <span className="px-3 py-1 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">{currentProduct.famille}</span>}
+                {currentProduct.type && <span className="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-full">{currentProduct.type}</span>}
               </div>
-            </div>
-          </div>
+           </div>
+
+           {/* Carte 2 : Liste des caractéristiques (Très propre, facile à lire) */}
+           <div className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100">
+              <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
+                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                   <Package size={20} className="text-blue-500" /> Détails techniques
+                 </h3>
+              </div>
+              
+              <div className="p-2">
+                 {/* Ligne : Code barre */}
+                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><Search size={20} /></div>
+                       <div>
+                          <p className="text-sm font-bold text-slate-800">Code Barre</p>
+                          <p className="text-xs text-slate-500 font-mono">{currentProduct.code_barre}</p>
+                       </div>
+                    </div>
+                 </div>
+                 
+                 {/* Ligne : Réf */}
+                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><AlertCircle size={20} /></div>
+                       <div>
+                          <p className="text-sm font-bold text-slate-800">Réf. Fabricant</p>
+                          <p className="text-xs text-slate-500 font-mono">{currentProduct.reference_fabricant || 'Non renseignée'}</p>
+                       </div>
+                    </div>
+                 </div>
+
+                 {/* Ligne : Emplacement */}
+                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><MapPin size={20} /></div>
+                       <div>
+                          <p className="text-sm font-bold text-slate-800">Emplacement / Magasin</p>
+                          <p className="text-xs text-slate-500">{currentProduct.site_rattachement || 'Non défini'}</p>
+                       </div>
+                    </div>
+                 </div>
+
+                 {/* Ligne : Date */}
+                 <div className="p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><History size={20} /></div>
+                       <div>
+                          <p className="text-sm font-bold text-slate-800">Date d'ajout</p>
+                          <p className="text-xs text-slate-500">
+                             {currentProduct.date_creation ? new Date(currentProduct.date_creation).toLocaleDateString('fr-FR') : 'Inconnue'}
+                          </p>
+                       </div>
+                    </div>
+                 </div>
+              </div>
+           </div>
         </div>
       </div>
     );
@@ -479,6 +529,46 @@ export default function App() {
     </div>
   );
 
+  const renderTakePhoto = () => (
+    <div className="relative w-full h-full bg-black flex flex-col animate-in zoom-in-95 duration-200 z-[60]">
+      <div className="absolute top-6 left-6 z-10">
+         <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition"><ArrowLeft size={28} /></button>
+      </div>
+      <div className="flex-1 relative overflow-hidden flex items-center justify-center">
+        <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
+        <canvas ref={canvasRef} className="hidden" />
+        <div className="absolute inset-0 border-[15px] border-black/40 pointer-events-none"></div>
+        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl pointer-events-none flex items-center justify-center">
+          <span className="bg-black/50 text-white px-4 py-2 rounded-full backdrop-blur-sm text-sm font-bold">Cadrez la pièce technique</span>
+        </div>
+      </div>
+      <div className="h-48 bg-black flex items-center justify-center pb-8 border-t border-white/10">
+        <button onClick={takePicture} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform bg-black hover:bg-white/10">
+          <div className="w-20 h-20 bg-white rounded-full"></div>
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderPhotoPreview = () => (
+    <div className="absolute inset-0 bg-slate-900 flex flex-col animate-in fade-in duration-200 z-[60]">
+       <div className="flex-1 relative p-8 flex flex-col justify-center">
+         <h3 className="text-white text-center text-3xl font-bold mb-8">La photo est-elle nette ?</h3>
+         <div className="w-full max-w-2xl mx-auto rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-700 bg-black">
+           <img src={capturedPhoto} alt="Aperçu" className="w-full h-auto object-contain max-h-[50vh]" />
+         </div>
+       </div>
+       <div className="bg-slate-800 p-8 flex gap-6 pb-12">
+          <button onClick={() => setViewState('take-photo')} disabled={isUploading} className="flex-1 py-6 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-xl font-bold flex items-center justify-center gap-3 transition disabled:opacity-50">
+            <X size={28} /> Refaire
+          </button>
+          <button onClick={saveNewArticle} disabled={isUploading} className="flex-1 py-6 rounded-2xl bg-green-500 hover:bg-green-400 text-white text-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-green-500/20 transition disabled:opacity-50">
+            {isUploading ? <span className="animate-pulse">Envoi en cours...</span> : <><Check size={28} /> Valider l'ajout</>}
+          </button>
+       </div>
+    </div>
+  );
+
   const renderHistory = () => (
     <div className="w-full h-full bg-slate-50 flex flex-col">
       <div className="bg-white p-6 shadow-sm z-10 sticky top-0 flex items-center gap-4">
@@ -492,8 +582,8 @@ export default function App() {
             <p className="text-xl font-medium">Aucun article scanné récemment</p>
           </div>
         ) : (
-          history.map((item, idx) => (
-            <div key={`${item.code_barre}-${idx}`} 
+          history.map((item) => (
+            <div key={item.code_barre} 
                  onClick={() => { 
                     setCurrentProduct(item); 
                     setIsProductExpanded(true); // Ouvre directement en plein écran depuis l'historique
@@ -577,10 +667,12 @@ export default function App() {
         </div>
         
         <div className={`w-full h-full max-md:pb-24 ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
-          {/* La caméra tourne tout le temps en fond dans l'onglet scan, sauf si on est sur un autre menu global */}
+          {/* La caméra tourne en fond dans l'onglet scan, et le scanner reste actif */}
           {(viewState === 'camera' || viewState === 'product') && renderCameraView()}
           {viewState === 'manual-entry' && renderManualEntry()}
           {viewState === 'not-found' && renderNotFound()}
+          {viewState === 'take-photo' && renderTakePhoto()}
+          {viewState === 'photo-preview' && renderPhotoPreview()}
         </div>
 
         {/* OVERLAYS GLOBAUX */}
