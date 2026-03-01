@@ -6,6 +6,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -18,6 +19,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   
+  // Notification in-app pour remplacer les alert()
   const [toastMessage, setToastMessage] = useState(null);
 
   const [activeTab, setActiveTab] = useState('scan');
@@ -26,6 +28,7 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
+  // États pour le "tiroir" (Bottom Sheet) et le tactile (Swipe)
   const [isProductExpanded, setIsProductExpanded] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
@@ -45,10 +48,14 @@ export default function App() {
   // --- VERROUILLAGE DE L'ORIENTATION EN PAYSAGE ---
   useEffect(() => {
     const lockOrientation = async () => {
+      // On vérifie si le navigateur de la tablette autorise le verrouillage
       if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
         try {
+          // On demande le mode paysage (landscape)
           await window.screen.orientation.lock('landscape');
+          console.log("Orientation verrouillée en mode paysage");
         } catch (error) {
+          // Le verrouillage échoue souvent si l'app n'est pas en plein écran ou pas installée
           console.log("Impossible de verrouiller l'orientation :", error);
         }
       }
@@ -56,7 +63,7 @@ export default function App() {
     lockOrientation();
   }, []);
 
-  // --- RÉFÉRENCES POUR LA CAMÉRA ---
+  // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les bugs de boucle) ---
   const stateRef = useRef({ viewState, isScanning, scannedCode: '', lastScanTime: 0, isProductExpanded: false });
   useEffect(() => {
     stateRef.current.viewState = viewState;
@@ -70,35 +77,47 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // --- FETCH HISTORIQUE DEPUIS SUPABASE (Simplifié) ---
+  // --- FETCH HISTORIQUE DEPUIS SUPABASE (Corrigé avec scanned_at) ---
   const fetchHistory = async (userId) => {
     if (!supabase) return;
     try {
+      // On trie en utilisant 'scanned_at' car c'est le nom de ta colonne dans Supabase !
       const { data, error } = await supabase
         .from('historique_scans')
-        .select('code_barre, details')
+        .select('*')
         .eq('user_id', userId)
-        .order('created_at', { ascending: false })
+        .order('scanned_at', { ascending: false })
         .limit(50);
         
-      if (error) throw error;
+      if (error) {
+        console.error("Détail de l'erreur Supabase :", error);
+        showToast("Erreur BDD : " + error.message);
+        return;
+      }
       
       const uniqueHistory = [];
       const codes = new Set();
       
       if (data) {
          data.forEach(row => {
-           // Grâce au type JSONB, 'row.details' est déjà un objet JavaScript propre !
-           if (row.details && !codes.has(row.code_barre)) {
+           let detailsObj = row.details;
+           
+           // Sécurité : si Supabase renvoie du texte au lieu d'un objet JSON, on le transforme
+           if (typeof detailsObj === 'string') {
+             try { detailsObj = JSON.parse(detailsObj); } 
+             catch (err) { console.error("Format JSON invalide:", row); }
+           }
+
+           if (detailsObj && !codes.has(row.code_barre)) {
              codes.add(row.code_barre);
-             uniqueHistory.push(row.details);
+             uniqueHistory.push(detailsObj);
            }
          });
       }
       
       setHistory(uniqueHistory);
     } catch (e) {
-      console.error("Erreur fetch historique:", e);
+      console.error("Erreur inattendue fetch historique:", e);
     }
   };
 
@@ -169,10 +188,11 @@ export default function App() {
     setIsScanning(true);
     setScannedCode(code);
     
+    // Mise à jour immédiate de la réf pour bloquer les scans multiples inutiles
     stateRef.current.isScanning = true;
     stateRef.current.scannedCode = code;
     stateRef.current.lastScanTime = Date.now();
-
+    
     if (!supabase) {
       showToast("Mode de test : Recherche simulée pour " + code);
       setIsScanning(false);
@@ -341,35 +361,33 @@ export default function App() {
     if (!touchStart || !touchEnd) return;
     const distance = touchStart - touchEnd;
     
+    // Swipe vers le haut (distance positive)
     if (distance > 50 && !isProductExpanded) {
-      setIsProductExpanded(true); // Glisser haut = plein écran
+      setIsProductExpanded(true);
     }
+    // Swipe vers le bas (distance négative)
     if (distance < -50 && !isProductExpanded) {
-      resetToScan(); // Glisser bas = fermer tiroir
+      resetToScan();
     }
     if (distance < -50 && isProductExpanded) {
-      setIsProductExpanded(false); // Glisser bas plein écran = réduire
+      setIsProductExpanded(false);
     }
     
+    // Reset
     setTouchStart(null);
     setTouchEnd(null);
   };
 
-  // Moteur Camera Scan Natif
+  // Moteur Camera Scan Natif : LA CAMÉRA NE S'ÉTEINT PLUS
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
 
     const startScanner = async () => {
+      // Tant qu'on est sur l'onglet "scan", la caméra tourne. (Sauf si on est déco)
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-              facingMode: 'environment',
-              width: { ideal: 2560 }, 
-              height: { ideal: 1440 }
-            } 
-          });
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             
@@ -377,6 +395,7 @@ export default function App() {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
                 
+                // On scanne uniquement si on n'est pas en train d'interagir avec l'UI
                 if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product' || stateRef.current.viewState === 'not-found') 
                     && !stateRef.current.isScanning 
                     && !stateRef.current.isProductExpanded 
@@ -387,6 +406,8 @@ export default function App() {
                       const code = barcodes[0].rawValue;
                       const now = Date.now();
                       
+                      // 1. Nouveau code : recherche immédiate
+                      // 2. Ancien code : on attend 2.5 secondes
                       if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2500)) {
                          handleSearch(code);
                       }
@@ -414,33 +435,16 @@ export default function App() {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      
+      canvas.width = video.videoWidth || 600;
+      canvas.height = video.videoHeight || 400;
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      
-      setCapturedPhoto(canvas.toDataURL('image/jpeg', 0.95));
+      setCapturedPhoto(canvas.toDataURL('image/jpeg'));
       setViewState('photo-preview');
     }
   };
 
   const saveNewArticle = async () => {
-    if (!supabase || !session) {
-      const pendingArticle = {
-        code_barre: scannedCode,
-        photo: capturedPhoto,
-        designation: 'En cours de création',
-        marque: 'Validation en attente',
-        reference_fabricant: 'N/A',
-        statut: 'En attente'
-      };
-      addToHistory(pendingArticle);
-      showToast("Mode Test : Article ajouté à l'historique !");
-      resetToScan();
-      return;
-    }
-
+    if (!supabase || !session) return;
     setIsUploading(true);
 
     try {
@@ -479,7 +483,7 @@ export default function App() {
 
   const resetToScan = () => {
     setViewState('camera');
-    setScannedCode(''); 
+    setScannedCode(''); // Vider le code permet un rescan immédiat sans attendre 2.5s
     setManualCode('');
     setCurrentProduct(null);
     setCapturedPhoto(null);
@@ -556,6 +560,7 @@ export default function App() {
 
   const renderScannerUI = () => (
     <>
+      {/* Cadre de visée avec coins arrondis doux */}
       {(!isProductExpanded) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="w-3/4 max-w-md aspect-video relative rounded-2xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)]">
@@ -575,6 +580,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Boutons d'action visibles uniquement si l'écran est dégagé */}
       {viewState === 'camera' && (
         <>
           <div className="absolute top-6 right-6 flex gap-4 z-20">
@@ -597,6 +603,7 @@ export default function App() {
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
+      // 1. MODE COMPACT (Tiroir Yuka arrondi avec gestes Swipe)
       return (
         <div 
           className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.2)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-8 max-md:pb-32"
@@ -608,23 +615,23 @@ export default function App() {
           <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
           
           <div className="p-5 flex gap-4 items-center">
-            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm relative">
+            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm">
               <img src={displayImage} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
             </div>
             
             <div className="flex-1 min-w-0 flex flex-col justify-center">
-               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">
-                 {currentProduct.designation || 'Article'}
-               </h3>
+               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">{currentProduct.designation || 'Article'}</h3>
                <p className="text-md font-bold text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'}</p>
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
             
+            {/* Bouton pour fermer manuellement et statut */}
             <div className="flex flex-col items-end shrink-0 ml-2 gap-3">
                <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition">
                  <X size={24} />
                </button>
                <div className="flex items-center gap-1.5">
+                 {/* Badge dynamique : vert si Actif, orange si "En attente" */}
                  <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut === 'En attente' ? 'bg-orange-500 shadow-sm animate-pulse' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
                </div>
             </div>
@@ -633,6 +640,7 @@ export default function App() {
       );
     }
 
+    // 2. MODE PLEIN ÉCRAN
     return (
       <div 
         className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0"
@@ -769,12 +777,14 @@ export default function App() {
     </div>
   );
 
+  // Écran "Appareil photo" superposé sur la vidéo principale
   const renderTakePhotoUI = () => (
     <div className="absolute inset-0 z-[60] flex flex-col animate-in fade-in duration-200">
       <div className="absolute top-6 left-6 z-10">
          <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg"><ArrowLeft size={28} /></button>
       </div>
       
+      {/* Zone centrale transparente pour laisser voir la vidéo en fond */}
       <div className="flex-1 relative flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 border-[15px] border-black/40"></div>
         <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center">
