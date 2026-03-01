@@ -4,9 +4,7 @@ import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, Ale
 import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('scan');
@@ -18,6 +16,7 @@ export default function App() {
   const [flashOn, setFlashOn] = useState(false);
   const [capturedPhoto, setCapturedPhoto] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -157,27 +156,56 @@ export default function App() {
   // --- SAUVEGARDE DANS LA VRAIE BASE SUPABASE ---
   const saveNewArticle = async () => {
     if (!supabase) {
-      alert("Mode Production : Ce bouton sauvegardera l'image en base64 dans la table 'articles_a_creer'.");
+      alert("Mode Production : Ce bouton sauvegardera l'image dans Supabase Storage puis créera l'article.");
       resetToScan();
       return;
     }
 
+    setIsUploading(true);
+
     try {
-      const { error } = await supabase
+      // 1. Convertir la photo (base64) en vrai fichier binaire (Blob)
+      const res = await fetch(capturedPhoto);
+      const blob = await res.blob();
+
+      // 2. Générer un nom de fichier unique basé sur le code-barres et la date
+      const fileName = `${scannedCode}_${Date.now()}.jpg`;
+
+      // 3. Envoyer la photo dans le "Bucket" Supabase Storage nommé 'photos_articles'
+      const { error: uploadError } = await supabase.storage
+        .from('photos_articles')
+        .upload(fileName, blob, {
+          contentType: 'image/jpeg',
+          upsert: false
+        });
+        
+      if (uploadError) throw uploadError;
+
+      // 4. Récupérer le lien URL public de la photo nouvellement créée
+      const { data: publicUrlData } = supabase.storage
+        .from('photos_articles')
+        .getPublicUrl(fileName);
+
+      const photoUrl = publicUrlData.publicUrl;
+
+      // 5. Enregistrer la demande dans la base de données avec le lien URL court !
+      const { error: dbError } = await supabase
         .from('articles_a_creer')
         .insert([{ 
           code_barre: scannedCode, 
-          photo_base64: capturedPhoto, 
+          photo_url: photoUrl, // Nouvelle colonne pour l'URL
           statut: 'en_attente'
         }]);
         
-      if (error) throw error;
+      if (dbError) throw dbError;
       
-      alert("Article enregistré dans la file d'attente ! L'équipe pourra le traiter.");
+      alert("Article et photo enregistrés avec succès dans la file d'attente !");
       resetToScan();
     } catch (error) {
       console.error("Erreur lors de l'enregistrement Supabase:", error);
       alert("Erreur lors de la sauvegarde. Vérifiez votre connexion.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -417,15 +445,21 @@ export default function App() {
        <div className="bg-slate-800 p-8 flex gap-6 pb-12">
           <button 
             onClick={() => setViewState('take-photo')}
-            className="flex-1 py-6 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-xl font-bold flex items-center justify-center gap-3 transition"
+            disabled={isUploading}
+            className="flex-1 py-6 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-xl font-bold flex items-center justify-center gap-3 transition disabled:opacity-50"
           >
             <X size={28} /> Refaire
           </button>
           <button 
             onClick={saveNewArticle}
-            className="flex-1 py-6 rounded-2xl bg-green-500 hover:bg-green-400 text-white text-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-green-500/20 transition"
+            disabled={isUploading}
+            className="flex-1 py-6 rounded-2xl bg-green-500 hover:bg-green-400 text-white text-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-green-500/20 transition disabled:opacity-50"
           >
-            <Check size={28} /> Valider l'ajout
+            {isUploading ? (
+               <span className="animate-pulse flex items-center gap-3">Envoi en cours...</span>
+            ) : (
+               <><Check size={28} /> Valider l'ajout</>
+            )}
           </button>
        </div>
     </div>
