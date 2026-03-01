@@ -47,7 +47,6 @@ export default function App() {
   useEffect(() => {
     const lockOrientation = async () => {
       if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
-        // On ne force le mode paysage QUE sur les grands écrans (tablettes/desktop)
         if (window.innerWidth >= 768) {
           try {
             await window.screen.orientation.lock('landscape');
@@ -331,6 +330,23 @@ export default function App() {
           });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
+
+            // --- NOUVEAU : FORCER LA MISE AU POINT CONTINUE (AUTOFOCUS) ---
+            try {
+              const track = stream.getVideoTracks()[0];
+              const capabilities = track.getCapabilities ? track.getCapabilities() : null;
+              
+              // Si l'appareil supporte le réglage du mode de focus
+              if (capabilities && capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+                await track.applyConstraints({
+                  advanced: [{ focusMode: 'continuous' }]
+                });
+                console.log("Autofocus continu activé");
+              }
+            } catch (focusErr) {
+              console.log("Impossible d'activer l'autofocus avancé:", focusErr);
+            }
+            // -------------------------------------------------------------
             
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
@@ -346,7 +362,6 @@ export default function App() {
                       const now = Date.now();
                       
                       if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2500)) {
-                         // VIBRATION HAPTIQUE AU SCAN REUSSI
                          if (navigator.vibrate) navigator.vibrate([50]);
                          handleSearch(code);
                       }
