@@ -73,17 +73,61 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  // --- NOUVEAU : FETCH HISTORIQUE DEPUIS SUPABASE ---
+  const fetchHistory = async (userId) => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('historique_scans')
+        .select('*')
+        .eq('user_id', userId)
+        .not('details', 'is', null) // On ne récupère que ceux qui ont les infos JSON
+        .order('created_at', { ascending: false })
+        .limit(50);
+        
+      if (error) throw error;
+      
+      // Déduplication locale pour la sécurité de l'affichage
+      const uniqueHistory = [];
+      const codes = new Set();
+      if (data) {
+         data.forEach(row => {
+           if (!codes.has(row.code_barre) && row.details) {
+             codes.add(row.code_barre);
+             uniqueHistory.push(row.details);
+           }
+         });
+      }
+      setHistory(uniqueHistory);
+    } catch (e) {
+      console.error("Erreur fetch historique:", e);
+    }
+  };
+
   // --- 1. GESTION DE L'AUTHENTIFICATION ---
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+       // Mode test offline : on utilise le cache du navigateur
+       const savedHistory = localStorage.getItem('techscan_history');
+       if (savedHistory) setHistory(JSON.parse(savedHistory));
+       return;
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchProfile(session.user.id);
+      if (session) {
+        fetchProfile(session.user.id);
+        fetchHistory(session.user.id); // Récupère l'historique cloud au lancement
+      }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session) fetchProfile(session.user.id);
-      else setProfile(null);
+      if (session) {
+        fetchProfile(session.user.id);
+        fetchHistory(session.user.id); // Récupère l'historique cloud à la connexion
+      } else {
+        setProfile(null);
+        setHistory([]); // Vide l'écran si on se déconnecte
+      }
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -124,11 +168,6 @@ export default function App() {
   };
 
   // --- 2. LOGIQUE DE L'APPLICATION ---
-  useEffect(() => {
-    const savedHistory = localStorage.getItem('techscan_history');
-    if (savedHistory) setHistory(JSON.parse(savedHistory));
-  }, []);
-
   const handleSearch = async (code) => {
     setIsScanning(true);
     setScannedCode(code);
@@ -182,16 +221,6 @@ export default function App() {
         }
       }
 
-      // Traçabilité du scan (facultatif si c'est un rescan, mais utile pour la data)
-      if (session && selectedStore) {
-        await supabase.from('historique_scans').insert([{
-          user_id: session.user.id,
-          magasin: selectedStore,
-          code_barre: code,
-          trouve: !!finalProduct
-        }]);
-      }
-
       setIsScanning(false);
       stateRef.current.isScanning = false;
 
@@ -211,28 +240,64 @@ export default function App() {
     }
   };
 
-  const addToHistory = (product) => {
+  const addToHistory = async (product) => {
+    // Mise à jour immédiate de l'interface (Optimistic UI) sans attendre la BDD
     setHistory(prevHistory => {
       const newEntry = { ...product, scanDate: new Date().toISOString() };
       const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
-      localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      if (!supabase) localStorage.setItem('techscan_history', JSON.stringify(newHistory));
       return newHistory;
     });
-  };
 
-  const clearAllHistory = () => {
-    if (window.confirm("Voulez-vous vraiment vider tout l'historique ?")) {
-      setHistory([]);
-      localStorage.removeItem('techscan_history');
+    if (!supabase || !session) return;
+    try {
+      // 1. Supprime l'ancienne occurrence pour cet utilisateur pour éviter les doublons
+      await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: product.code_barre });
+      
+      // 2. Insère la nouvelle occurrence avec le bloc 'details' en JSON
+      await supabase.from('historique_scans').insert([{
+        user_id: session.user.id,
+        magasin: selectedStore || 'Inconnu',
+        code_barre: product.code_barre,
+        details: product,
+        trouve: true
+      }]);
+    } catch (e) {
+      console.error("Erreur update historique DB:", e);
     }
   };
 
-  const deleteFromHistory = (codeBarre) => {
+  const clearAllHistory = async () => {
+    if (window.confirm("Voulez-vous vraiment vider tout l'historique ?")) {
+      setHistory([]);
+      if (!supabase) localStorage.removeItem('techscan_history');
+      
+      // Vider la base de données ne supprime que SON historique
+      if (supabase && session) {
+        try {
+          await supabase.from('historique_scans').delete().eq('user_id', session.user.id);
+        } catch(e) {
+          console.error("Erreur suppression historique", e);
+        }
+      }
+    }
+  };
+
+  const deleteFromHistory = async (codeBarre) => {
     setHistory(prevHistory => {
       const newHistory = prevHistory.filter(h => h.code_barre !== codeBarre);
-      localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      if (!supabase) localStorage.setItem('techscan_history', JSON.stringify(newHistory));
       return newHistory;
     });
+
+    // Supprimer un article de l'historique ne touchera pas la table 'articles_a_creer'
+    if (supabase && session) {
+      try {
+        await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: codeBarre });
+      } catch(e) {
+        console.error("Erreur suppression article historique", e);
+      }
+    }
   };
 
   const handleItemPressStart = (item) => {
