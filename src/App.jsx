@@ -6,6 +6,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -36,9 +37,11 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   
-  // NOUVEAUX ÉTATS POUR LA RECHERCHE MANUELLE EN TEMPS RÉEL
   const [manualSearchResults, setManualSearchResults] = useState([]);
   const [isManualSearching, setIsManualSearching] = useState(false);
+  
+  // NOUVEAU: État pour l'animation de focus de la caméra
+  const [focusPoint, setFocusPoint] = useState(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -75,7 +78,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // --- NOUVEAU : MOTEUR DE RECHERCHE EN TEMPS RÉEL (DEBOUNCE) ---
+  // --- MOTEUR DE RECHERCHE EN TEMPS RÉEL (DEBOUNCE) ---
   useEffect(() => {
     if (viewState !== 'manual-entry' || manualCode.length < 2) {
       setManualSearchResults([]);
@@ -88,11 +91,9 @@ export default function App() {
     const searchData = async () => {
       setIsManualSearching(true);
       try {
-        // Sécurisation de la chaîne de recherche (échappe les virgules pour le .or)
         const cleanTerm = manualCode.replace(/,/g, ' ').trim();
         const searchTerm = `%${cleanTerm}%`;
         
-        // Recherche multi-critères : Code barre, Désignation, Marque ou Référence
         const { data, error } = await supabase
           .from('articles')
           .select('*')
@@ -108,7 +109,6 @@ export default function App() {
       }
     };
 
-    // Déclenche la recherche 300ms après que l'utilisateur a arrêté de taper (Debounce)
     const timerId = setTimeout(searchData, 300);
     return () => clearTimeout(timerId);
   }, [manualCode, viewState, session]);
@@ -355,6 +355,62 @@ export default function App() {
     setTouchStart(null); setTouchEnd(null);
   };
 
+  // --- NOUVEAU: GESTION DU TAP-TO-FOCUS ---
+  const handleCameraTap = async (e) => {
+    // Ignorer si l'utilisateur a cliqué sur un bouton ou une icône par dessus la vidéo
+    if (e.target.closest('button') || e.target.closest('input')) return;
+
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    
+    // Position relative du clic dans le conteneur
+    const x = e.clientX - containerRect.left;
+    const y = e.clientY - containerRect.top;
+    
+    // Affiche l'animation visuelle du focus
+    setFocusPoint({ x, y });
+    setTimeout(() => setFocusPoint(null), 1000);
+
+    try {
+      if (!videoRef.current || !videoRef.current.srcObject) return;
+      const track = videoRef.current.srcObject.getVideoTracks()[0];
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+
+      // Calcul des coordonnées normalisées (0.0 à 1.0) pour l'API
+      const relativeX = x / containerRect.width;
+      const relativeY = y / containerRect.height;
+
+      const advancedConstraints = {};
+      let apply = false;
+
+      // Utiliser l'API "pointsOfInterest" si supportée (Généralement Android Chrome)
+      if (capabilities.pointsOfInterest) {
+        advancedConstraints.pointsOfInterest = [{ x: relativeX, y: relativeY }];
+        apply = true;
+      }
+
+      // Forcer un déclenchement de la mise au point "Single Shot"
+      if (capabilities.focusMode && capabilities.focusMode.includes('single-shot')) {
+        advancedConstraints.focusMode = 'single-shot';
+        apply = true;
+      }
+
+      if (apply) {
+        await track.applyConstraints({ advanced: [advancedConstraints] });
+        
+        // Repasser en mode autofocus continu après la capture de la netteté
+        if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+          setTimeout(async () => {
+            try { 
+               await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); 
+            } catch(err) {}
+          }, 2000);
+        }
+      }
+    } catch (err) {
+      console.log("Mise au point manuelle non supportée sur ce navigateur:", err);
+    }
+  };
+
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
@@ -372,12 +428,10 @@ export default function App() {
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
 
-            // --- NOUVEAU : FORCER LA MISE AU POINT CONTINUE (AUTOFOCUS) ---
             try {
               const track = stream.getVideoTracks()[0];
               const capabilities = track.getCapabilities ? track.getCapabilities() : null;
               
-              // Si l'appareil supporte le réglage du mode de focus
               if (capabilities && capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
                 await track.applyConstraints({
                   advanced: [{ focusMode: 'continuous' }]
@@ -387,7 +441,6 @@ export default function App() {
             } catch (focusErr) {
               console.log("Impossible d'activer l'autofocus avancé:", focusErr);
             }
-            // -------------------------------------------------------------
             
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
@@ -477,9 +530,9 @@ export default function App() {
 
   const resetToScan = () => {
     setViewState('camera');
-    setScannedCode(''); // Vider le code permet un rescan immédiat sans attendre 2.5s
+    setScannedCode(''); 
     setManualCode('');
-    setManualSearchResults([]); // Reset de la recherche
+    setManualSearchResults([]); 
     setCurrentProduct(null);
     setCapturedPhoto(null);
     setIsProductExpanded(false);
@@ -544,7 +597,6 @@ export default function App() {
 
   const renderScannerUI = () => (
     <>
-      {/* Zone de scan repensée : Carrée sur mobile (portrait), Rectangulaire sur tablette */}
       {(!isProductExpanded) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="w-64 h-64 sm:w-72 sm:h-72 md:w-3/4 md:h-auto md:max-w-md md:aspect-video relative rounded-3xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)] bg-black/10 backdrop-blur-[1px]">
@@ -571,7 +623,6 @@ export default function App() {
               {flashOn ? <Zap size={28} /> : <ZapOff size={28} />}
             </button>
           </div>
-          {/* Bouton de saisie manuelle remonté sur mobile pour ne pas toucher la barre de navigation */}
           <div className="absolute bottom-24 md:bottom-12 w-full px-8 flex justify-center items-center z-20">
              <button onClick={() => setViewState('manual-entry')} className="bg-black/70 border border-white/20 backdrop-blur-md text-white px-6 py-4 rounded-full flex items-center gap-3 font-semibold hover:bg-black/90 transition shadow-xl active:scale-95">
                 <Search size={22} /> Saisie manuelle
@@ -587,7 +638,6 @@ export default function App() {
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
-      // MODE COMPACT MOBILE : Bottom-16 permet de se placer exactement au dessus de la barre de navigation native (h-16)
       return (
         <div 
           className="absolute bottom-16 md:bottom-0 left-0 right-0 bg-white rounded-t-[2rem] shadow-[0_-15px_40px_rgba(0,0,0,0.15)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-4 md:pb-8"
@@ -622,7 +672,6 @@ export default function App() {
       );
     }
 
-    // MODE PLEIN ÉCRAN : z-[100] pour recouvrir la barre de navigation sur mobile
     return (
       <div 
         className="absolute inset-0 bg-slate-50 z-[100] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-10 md:pb-0"
@@ -747,7 +796,6 @@ export default function App() {
 
   const renderManualEntry = () => (
     <div className="absolute inset-0 bg-slate-50 flex flex-col z-[100] animate-in slide-in-from-bottom-10 duration-200">
-      {/* HEADER DE RECHERCHE */}
       <div className="bg-white p-4 md:p-6 shadow-sm flex items-center gap-3 md:gap-4 border-b border-slate-200 z-10 shrink-0">
          <button onClick={() => setViewState('camera')} className="p-2.5 md:p-3 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition active:scale-95">
            <ArrowLeft size={24} />
@@ -773,7 +821,6 @@ export default function App() {
          </div>
       </div>
 
-      {/* LISTE DES RÉSULTATS */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-3 pb-24">
          {manualCode.length > 0 && manualCode.length < 2 && (
            <p className="text-center text-slate-400 mt-10 font-medium text-sm">Tapez au moins 2 caractères...</p>
@@ -795,7 +842,7 @@ export default function App() {
                     setCurrentProduct(item);
                     setIsProductExpanded(true);
                     setViewState('product');
-                    addToHistory(item); // Enregistre la sélection dans l'historique
+                    addToHistory(item); 
                  }}
                  className="bg-white p-3 md:p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:border-blue-300 active:scale-[0.98] transition-all">
               <div className="w-14 h-14 bg-slate-50 border border-slate-100 rounded-xl p-1 shrink-0 flex items-center justify-center">
@@ -810,7 +857,6 @@ export default function App() {
          ))}
       </div>
       
-      {/* BOUTON D'ACTION (Fixé en bas) */}
       <div className="absolute bottom-0 left-0 right-0 p-4 md:p-6 bg-white/95 backdrop-blur-md border-t border-slate-100 shadow-[0_-10px_20px_rgba(0,0,0,0.03)] pb-safe">
          <button 
             onClick={() => handleSearch(manualCode)} 
@@ -833,7 +879,6 @@ export default function App() {
          <button onClick={() => setViewState('not-found')} className="p-3 md:p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg active:scale-95"><ArrowLeft size={24} /></button>
       </div>
       
-      {/* Zone de focus centrale */}
       <div className="flex-1 relative flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 border-[20px] md:border-[15px] border-black/50"></div>
         <div className="absolute inset-x-8 top-[20%] bottom-[25%] md:inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
@@ -889,16 +934,18 @@ export default function App() {
         ) : (
           history.map((item) => (
             <div key={item.code_barre} 
-                 onClick={() => { 
-                    setCurrentProduct(item); 
-                    setIsProductExpanded(true); 
-                    setViewState('product'); 
-                 }} 
-                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
+                 onClick={() => handleHistoryItemClick(item)}
+                 onTouchStart={() => handleItemPressStart(item)}
+                 onTouchEnd={handleItemPressEnd}
+                 onTouchMove={handleItemPressEnd}
+                 onMouseDown={() => handleItemPressStart(item)}
+                 onMouseUp={handleItemPressEnd}
+                 onMouseLeave={handleItemPressEnd}
+                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98] select-none">
               <div className="w-16 h-16 md:w-20 md:h-20 bg-white border border-slate-100 rounded-xl md:rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
-                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
+                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg pointer-events-none" />
               </div>
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 pointer-events-none">
                 <h4 className="text-lg md:text-xl font-bold text-slate-800 truncate mb-0.5 flex items-center gap-2">
                   {item.designation || 'Article'}
                   {item.statut === 'En attente' && (
@@ -919,14 +966,14 @@ export default function App() {
   return (
     <div className="flex h-[100dvh] w-full bg-slate-900 font-sans text-slate-900 overflow-hidden flex-col md:flex-row relative">
       
-      {/* Notifications Toasts - Placés en haut pour ne pas être cachés par la Bottom Nav */}
+      {/* Notifications Toasts */}
       {toastMessage && (
         <div className="absolute top-16 md:top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-5 py-3 md:px-6 md:py-4 rounded-2xl shadow-2xl z-[110] font-bold text-sm text-center border border-slate-700 animate-in slide-in-from-top-4">
            {toastMessage}
         </div>
       )}
 
-      {/* HEADER TOP (Mobile) - Épuré et plat */}
+      {/* HEADER TOP (Mobile) */}
       <div className="md:hidden w-full bg-white/95 backdrop-blur-md px-4 py-3 flex justify-between items-center z-50 border-b border-slate-100 shadow-sm absolute top-0 left-0 right-0">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-extrabold shrink-0 shadow-sm text-sm">
@@ -1001,7 +1048,7 @@ export default function App() {
         </div>
       </nav>
 
-      {/* BOTTOM NAV (Mobile) - Fixée au bas comme une App iOS/Android standard */}
+      {/* BOTTOM NAV (Mobile) */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-200 flex justify-around items-center h-16 z-[70] pb-safe shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
         <button onClick={() => { setActiveTab('scan'); if(viewState !== 'camera') resetToScan(); }} className={`flex-1 flex flex-col items-center justify-center h-full transition-colors ${activeTab === 'scan' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
           <Camera size={24} strokeWidth={activeTab === 'scan' ? 2.5 : 2} className={activeTab === 'scan' ? '-translate-y-0.5 transition-transform' : 'transition-transform'} />
@@ -1020,9 +1067,24 @@ export default function App() {
            {renderHistory()}
         </div>
         
-        <div className={`w-full h-full relative ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
+        {/* Conteneur principal de scan gérant le Tape-to-Focus */}
+        <div className={`w-full h-full relative ${activeTab === 'scan' ? 'block' : 'hidden'}`} onClick={handleCameraTap}>
            <video ref={videoRef} autoPlay playsInline muted className={`absolute inset-0 w-full h-full object-cover ${(viewState === 'camera' || viewState === 'take-photo' || viewState === 'product' || viewState === 'not-found') ? 'opacity-80' : 'opacity-0'}`} />
            <canvas ref={canvasRef} className="hidden" />
+
+           {/* Animation du Focus au moment du Tap */}
+           {focusPoint && (
+              <div 
+                 className="absolute border-2 border-yellow-400 rounded-full z-50 pointer-events-none"
+                 style={{ 
+                    left: focusPoint.x - 30, 
+                    top: focusPoint.y - 30, 
+                    width: 60, 
+                    height: 60,
+                    animation: 'focus-pulse 0.8s ease-out forwards' 
+                 }}
+              />
+           )}
 
            {(viewState === 'camera' || viewState === 'product' || viewState === 'not-found') && renderScannerUI()}
            {viewState === 'take-photo' && renderTakePhotoUI()}
@@ -1036,6 +1098,7 @@ export default function App() {
 
       <style dangerouslySetInnerHTML={{__html: `
         @keyframes scanline { 0% { transform: translateY(-120px); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(120px); opacity: 0; } }
+        @keyframes focus-pulse { 0% { transform: scale(1.5); opacity: 1; border-width: 4px; } 100% { transform: scale(0.6); opacity: 0; border-width: 1px; } }
         .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
       `}} />
     </div>
