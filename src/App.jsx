@@ -136,7 +136,7 @@ export default function App() {
     stateRef.current.isScanning = true;
     stateRef.current.scannedCode = code;
     stateRef.current.lastScanTime = Date.now();
-    
+
     if (!supabase) {
       showToast("Mode de test : Recherche simulée pour " + code);
       setIsScanning(false);
@@ -146,6 +146,7 @@ export default function App() {
     }
 
     try {
+      // 1. RECHERCHE DANS LE CATALOGUE VALIDÉ
       const { data: product, error } = await supabase
         .from('articles')
         .select('*')
@@ -154,23 +155,52 @@ export default function App() {
         
       if (error) throw error;
 
+      let finalProduct = product;
+
+      // 2. RECHERCHE DANS LA FILE D'ATTENTE SI INCONNU (Vérification pour toutes les tablettes)
+      if (!finalProduct) {
+        const { data: pendingData, error: pendingError } = await supabase
+          .from('articles_a_creer')
+          .select('*')
+          .eq('code_barre', code)
+          .limit(1); // Prend la première demande trouvée pour ce code
+
+        if (pendingError) throw pendingError;
+
+        if (pendingData && pendingData.length > 0) {
+          const pendingProduct = pendingData[0];
+          // On construit un "faux" article pour l'affichage visuel basé sur la demande
+          finalProduct = {
+            code_barre: pendingProduct.code_barre,
+            photo: pendingProduct.photo_url,
+            designation: 'En cours de création',
+            marque: 'Validation en attente',
+            reference_fabricant: 'N/A',
+            statut: 'En attente', // Ce statut déclenche l'affichage du badge orange
+            date_creation: pendingProduct.created_at || new Date().toISOString()
+          };
+        }
+      }
+
+      // Traçabilité du scan (facultatif si c'est un rescan, mais utile pour la data)
       if (session && selectedStore) {
         await supabase.from('historique_scans').insert([{
           user_id: session.user.id,
           magasin: selectedStore,
           code_barre: code,
-          trouve: !!product
+          trouve: !!finalProduct
         }]);
       }
 
       setIsScanning(false);
       stateRef.current.isScanning = false;
 
-      if (product) {
-        setCurrentProduct(product);
+      // AFFICHAGE DU RÉSULTAT
+      if (finalProduct) {
+        setCurrentProduct(finalProduct);
         setIsProductExpanded(false); 
         setViewState('product');
-        addToHistory(product); // Appel corrigé pour gérer plusieurs scans
+        addToHistory(finalProduct);
       } else {
         setViewState('not-found');
       }
@@ -181,11 +211,9 @@ export default function App() {
     }
   };
 
-  // NOUVEAU: Gestion robuste de l'historique
   const addToHistory = (product) => {
     setHistory(prevHistory => {
       const newEntry = { ...product, scanDate: new Date().toISOString() };
-      // Retire l'ancienne occurrence et ajoute le nouveau scan en haut
       const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
       localStorage.setItem('techscan_history', JSON.stringify(newHistory));
       return newHistory;
@@ -207,17 +235,15 @@ export default function App() {
     });
   };
 
-  // NOUVEAU: Appui long sur historique
   const handleItemPressStart = (item) => {
     isLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       isLongPress.current = true;
-      // Vibration si supportée
       if (navigator.vibrate) navigator.vibrate(50);
       if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique ?`)) {
         deleteFromHistory(item.code_barre);
       }
-    }, 700); // Déclenchement après 700ms
+    }, 700); 
   };
 
   const handleItemPressEnd = () => {
@@ -227,11 +253,9 @@ export default function App() {
   };
 
   const handleHistoryItemClick = (item) => {
-    // Si l'utilisateur a fait un appui long, on ignore le clic simple
     if (isLongPress.current) return; 
-    
     setCurrentProduct(item);
-    setIsProductExpanded(true); // Ouvre directement en plein écran
+    setIsProductExpanded(true); 
     setViewState('product'); 
   };
 
@@ -283,7 +307,14 @@ export default function App() {
     const startScanner = async () => {
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          // DEMANDE DE HAUTE RÉSOLUTION (HD/4K selon la capacité de l'appareil)
+          stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+              facingMode: 'environment',
+              width: { ideal: 2560 }, 
+              height: { ideal: 1440 }
+            } 
+          });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             
@@ -328,16 +359,35 @@ export default function App() {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth || 600;
-      canvas.height = video.videoHeight || 400;
+      
+      // On utilise la vraie résolution native de la vidéo pour la photo
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      setCapturedPhoto(canvas.toDataURL('image/jpeg'));
+      
+      // QUALITÉ D'IMAGE PREMIUM : Export JPEG à 95% (0.95) de qualité pour ne pas perdre les détails
+      setCapturedPhoto(canvas.toDataURL('image/jpeg', 0.95));
       setViewState('photo-preview');
     }
   };
 
   const saveNewArticle = async () => {
-    if (!supabase || !session) return;
+    if (!supabase || !session) {
+      const pendingArticle = {
+        code_barre: scannedCode,
+        photo: capturedPhoto,
+        designation: 'En cours de création',
+        marque: 'Validation en attente',
+        reference_fabricant: 'N/A',
+        statut: 'En attente'
+      };
+      addToHistory(pendingArticle);
+      showToast("Mode Test : Article ajouté à l'historique !");
+      resetToScan();
+      return;
+    }
+
     setIsUploading(true);
 
     try {
@@ -355,6 +405,17 @@ export default function App() {
       }]);
       if (dbError) throw dbError;
       
+      // Ajout de l'article avec le statut "En attente" dans l'historique local pour un retour visuel immédiat
+      const pendingArticle = {
+        code_barre: scannedCode,
+        photo: publicUrlData.publicUrl,
+        designation: 'En cours de création',
+        marque: 'Validation en attente',
+        reference_fabricant: 'N/A',
+        statut: 'En attente'
+      };
+      addToHistory(pendingArticle);
+
       showToast("Article enregistré avec succès !");
       resetToScan();
     } catch (error) {
@@ -495,12 +556,14 @@ export default function App() {
           <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
           
           <div className="p-5 flex gap-4 items-center">
-            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm">
+            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm relative">
               <img src={displayImage} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
             </div>
             
             <div className="flex-1 min-w-0 flex flex-col justify-center">
-               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">{currentProduct.designation || 'Article'}</h3>
+               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">
+                 {currentProduct.designation || 'Article'}
+               </h3>
                <p className="text-md font-bold text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'}</p>
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
@@ -510,7 +573,8 @@ export default function App() {
                  <X size={24} />
                </button>
                <div className="flex items-center gap-1.5">
-                 <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
+                 {/* Badge dynamique : vert si Actif, orange si "En attente" */}
+                 <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut === 'En attente' ? 'bg-orange-500 shadow-sm animate-pulse' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
                </div>
             </div>
           </div>
@@ -724,11 +788,19 @@ export default function App() {
                  onMouseUp={handleItemPressEnd}
                  onMouseLeave={handleItemPressEnd}
                  className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6 cursor-pointer hover:shadow-md transition-all active:scale-[0.98] select-none">
-              <div className="w-20 h-20 bg-white border border-slate-100 rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm">
+              <div className="w-20 h-20 bg-white border border-slate-100 rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
                  <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
               </div>
               <div className="flex-1 min-w-0 pointer-events-none">
-                <h4 className="text-xl font-bold text-slate-800 truncate mb-1">{item.designation || 'Article'}</h4>
+                <h4 className="text-xl font-bold text-slate-800 truncate mb-1 flex items-center gap-2">
+                  {item.designation || 'Article'}
+                  {/* Badge visible si l'article est en création */}
+                  {item.statut === 'En attente' && (
+                    <span className="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black bg-orange-100 text-orange-600 border border-orange-200 uppercase tracking-wider">
+                      En création
+                    </span>
+                  )}
+                </h4>
                 <p className="text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-2">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
               </div>
             </div>
@@ -852,7 +924,7 @@ export default function App() {
            {viewState === 'manual-entry' && renderManualEntry()}
         </div>
 
-        {/* OVERLAYS GLOBAUX - Déplacés ici pour s'afficher par-dessus l'historique ! */}
+        {/* OVERLAYS GLOBAUX */}
         {viewState === 'product' && renderProductOverlay()}
         {viewState === 'not-found' && renderNotFoundOverlay()}
 
