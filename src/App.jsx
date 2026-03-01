@@ -6,7 +6,6 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
-
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -37,6 +36,10 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   
+  // NOUVEAUX ÉTATS POUR LA RECHERCHE MANUELLE EN TEMPS RÉEL
+  const [manualSearchResults, setManualSearchResults] = useState([]);
+  const [isManualSearching, setIsManualSearching] = useState(false);
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -71,6 +74,44 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
+
+  // --- NOUVEAU : MOTEUR DE RECHERCHE EN TEMPS RÉEL (DEBOUNCE) ---
+  useEffect(() => {
+    if (viewState !== 'manual-entry' || manualCode.length < 2) {
+      setManualSearchResults([]);
+      setIsManualSearching(false);
+      return;
+    }
+
+    if (!supabase) return;
+
+    const searchData = async () => {
+      setIsManualSearching(true);
+      try {
+        // Sécurisation de la chaîne de recherche (échappe les virgules pour le .or)
+        const cleanTerm = manualCode.replace(/,/g, ' ').trim();
+        const searchTerm = `%${cleanTerm}%`;
+        
+        // Recherche multi-critères : Code barre, Désignation, Marque ou Référence
+        const { data, error } = await supabase
+          .from('articles')
+          .select('*')
+          .or(`code_barre.ilike.${searchTerm},designation.ilike.${searchTerm},marque.ilike.${searchTerm},reference_fabricant.ilike.${searchTerm}`)
+          .limit(15);
+
+        if (error) throw error;
+        setManualSearchResults(data || []);
+      } catch (err) {
+        console.error("Erreur recherche live:", err);
+      } finally {
+        setIsManualSearching(false);
+      }
+    };
+
+    // Déclenche la recherche 300ms après que l'utilisateur a arrêté de taper (Debounce)
+    const timerId = setTimeout(searchData, 300);
+    return () => clearTimeout(timerId);
+  }, [manualCode, viewState, session]);
 
   const fetchHistory = async (userId) => {
     if (!supabase) return;
@@ -436,8 +477,9 @@ export default function App() {
 
   const resetToScan = () => {
     setViewState('camera');
-    setScannedCode('');
+    setScannedCode(''); // Vider le code permet un rescan immédiat sans attendre 2.5s
     setManualCode('');
+    setManualSearchResults([]); // Reset de la recherche
     setCurrentProduct(null);
     setCapturedPhoto(null);
     setIsProductExpanded(false);
@@ -704,14 +746,83 @@ export default function App() {
   };
 
   const renderManualEntry = () => (
-    <div className="absolute inset-0 bg-slate-50 flex flex-col p-6 md:p-8 animate-in fade-in duration-200 z-[100]">
-      <button onClick={() => setViewState('camera')} className="w-fit p-3 md:p-4 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 mb-6 hover:bg-slate-100 transition active:scale-95"><ArrowLeft size={24} /></button>
-      <div className="max-w-xl mx-auto w-full flex-1 flex flex-col justify-center">
-        <h2 className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-3">Saisie manuelle</h2>
-        <div className="bg-white p-2 md:p-3 rounded-2xl shadow-sm border-2 border-slate-200 flex items-center mb-6">
-          <input type="text" autoFocus className="flex-1 bg-transparent border-none text-2xl md:text-3xl p-3 md:p-4 outline-none font-mono text-slate-800 uppercase rounded-xl w-full" placeholder="Ex: 316514..." value={manualCode} onChange={(e) => setManualCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch(manualCode)} />
-        </div>
-        <button onClick={() => handleSearch(manualCode)} disabled={!manualCode} className="w-full py-4 md:py-6 rounded-2xl bg-blue-600 text-white text-xl md:text-2xl font-bold shadow-lg shadow-blue-500/30 disabled:opacity-50 active:scale-95 transition-transform">Rechercher l'article</button>
+    <div className="absolute inset-0 bg-slate-50 flex flex-col z-[100] animate-in slide-in-from-bottom-10 duration-200">
+      {/* HEADER DE RECHERCHE */}
+      <div className="bg-white p-4 md:p-6 shadow-sm flex items-center gap-3 md:gap-4 border-b border-slate-200 z-10 shrink-0">
+         <button onClick={() => setViewState('camera')} className="p-2.5 md:p-3 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition active:scale-95">
+           <ArrowLeft size={24} />
+         </button>
+         <div className="flex-1 relative">
+            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+               <Search size={20} className={isManualSearching ? "text-blue-500 animate-pulse" : "text-slate-400"} />
+            </div>
+            <input 
+              type="text" 
+              autoFocus 
+              className="w-full bg-slate-100 border-none text-base md:text-lg p-3.5 md:p-4 pl-12 pr-12 outline-none font-medium text-slate-800 rounded-2xl focus:ring-2 focus:ring-blue-500 transition-shadow" 
+              placeholder="Code, marque, désignation..." 
+              value={manualCode} 
+              onChange={(e) => setManualCode(e.target.value)} 
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch(manualCode)} 
+            />
+            {manualCode && (
+              <button onClick={() => { setManualCode(''); setManualSearchResults([]); }} className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 active:scale-95">
+                <X size={20} />
+              </button>
+            )}
+         </div>
+      </div>
+
+      {/* LISTE DES RÉSULTATS */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-3 pb-24">
+         {manualCode.length > 0 && manualCode.length < 2 && (
+           <p className="text-center text-slate-400 mt-10 font-medium text-sm">Tapez au moins 2 caractères...</p>
+         )}
+         
+         {manualCode.length >= 2 && !isManualSearching && manualSearchResults.length === 0 && (
+            <div className="text-center mt-12 animate-in fade-in duration-300">
+               <div className="w-16 h-16 bg-slate-200/50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-400">
+                 <Package size={32} />
+               </div>
+               <h3 className="text-lg font-bold text-slate-800 mb-1">Aucun article trouvé</h3>
+               <p className="text-slate-500 text-sm">Cet article n'existe pas dans le catalogue.</p>
+            </div>
+         )}
+
+         {manualSearchResults.map((item) => (
+            <div key={item.id || item.code_barre} 
+                 onClick={() => {
+                    setCurrentProduct(item);
+                    setIsProductExpanded(true);
+                    setViewState('product');
+                    addToHistory(item); // Enregistre la sélection dans l'historique
+                 }}
+                 className="bg-white p-3 md:p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:border-blue-300 active:scale-[0.98] transition-all">
+              <div className="w-14 h-14 bg-slate-50 border border-slate-100 rounded-xl p-1 shrink-0 flex items-center justify-center">
+                 <img src={item.image_reference || item.photo || item.photo_url || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
+              </div>
+              <div className="flex-1 min-w-0">
+                 <h4 className="text-sm md:text-md font-bold text-slate-800 truncate leading-tight mb-0.5">{item.designation || 'Article'}</h4>
+                 <p className="text-xs md:text-sm text-slate-500 font-medium truncate">{item.code_barre} <span className="text-slate-300 mx-1">•</span> {item.marque}</p>
+              </div>
+              <ChevronDown size={20} className="text-slate-300 -rotate-90 shrink-0" />
+            </div>
+         ))}
+      </div>
+      
+      {/* BOUTON D'ACTION (Fixé en bas) */}
+      <div className="absolute bottom-0 left-0 right-0 p-4 md:p-6 bg-white/95 backdrop-blur-md border-t border-slate-100 shadow-[0_-10px_20px_rgba(0,0,0,0.03)] pb-safe">
+         <button 
+            onClick={() => handleSearch(manualCode)} 
+            disabled={!manualCode} 
+            className={`w-full py-4 md:py-4 rounded-2xl text-white text-lg font-bold disabled:opacity-50 disabled:shadow-none active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${manualSearchResults.length === 0 && manualCode.length >= 2 ? 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/30' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/30'}`}
+         >
+            {manualSearchResults.length === 0 && manualCode.length >= 2 ? (
+              <><Camera size={22} /> Déclarer inconnu</>
+            ) : (
+              <><Search size={22} /> Rechercher ce code</>
+            )}
+         </button>
       </div>
     </div>
   );
