@@ -41,6 +41,24 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
+  // --- NOUVEAU : VERROUILLAGE DE L'ORIENTATION EN PAYSAGE ---
+  useEffect(() => {
+    const lockOrientation = async () => {
+      // On vérifie si le navigateur de la tablette autorise le verrouillage
+      if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
+        try {
+          // On demande le mode paysage (landscape)
+          await window.screen.orientation.lock('landscape');
+          console.log("Orientation verrouillée en mode paysage");
+        } catch (error) {
+          // Le verrouillage échoue souvent si l'app n'est pas en plein écran ou pas installée
+          console.log("Impossible de verrouiller l'orientation :", error);
+        }
+      }
+    };
+    lockOrientation();
+  }, []);
+
   // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les bugs de boucle) ---
   const stateRef = useRef({ viewState, isScanning, scannedCode: '', lastScanTime: 0, isProductExpanded: false });
   useEffect(() => {
