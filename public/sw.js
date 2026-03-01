@@ -1,7 +1,6 @@
 // public/sw.js
-const CACHE_NAME = 'techscan-cache-v1';
+const CACHE_NAME = 'techscan-cache-v2'; // Passage en v2 pour forcer la mise à jour !
 
-// Liste des ressources essentielles à mettre en cache pour le mode hors-ligne
 const urlsToCache = [
   '/',
   '/index.html',
@@ -10,44 +9,52 @@ const urlsToCache = [
   '/icon-512x512.png'
 ];
 
-// Installation du Service Worker et mise en cache des fichiers
 self.addEventListener('install', event => {
+  // Force le nouveau Service Worker à s'installer immédiatement
+  self.skipWaiting();
+  
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
-        console.log('Cache ouvert');
         return cache.addAll(urlsToCache);
       })
   );
 });
 
-// Interception des requêtes réseau
-self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        // Cache hit : on retourne la version en cache
-        if (response) {
-          return response;
-        }
-        // Sinon, on fait la requête réseau normalement
-        return fetch(event.request);
-      })
-  );
-});
-
-// Nettoyage des anciens caches lors de la mise à jour du Service Worker
 self.addEventListener('activate', event => {
+  // Prend le contrôle immédiat de la tablette sans attendre le redémarrage
+  event.waitUntil(self.clients.claim());
+
   const cacheWhitelist = [CACHE_NAME];
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
         cacheNames.map(cacheName => {
           if (cacheWhitelist.indexOf(cacheName) === -1) {
-            return caches.delete(cacheName);
+            return caches.delete(cacheName); // Supprime les vieux caches
           }
         })
       );
+    })
+  );
+});
+
+self.addEventListener('fetch', event => {
+  // 1. Stratégie "Network First" pour la page HTML (Pour toujours avoir la dernière mise à jour)
+  if (event.request.mode === 'navigate' || (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html'))) {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        // Si la tablette n'a plus de réseau, on renvoie la version en cache
+        return caches.match('/index.html');
+      })
+    );
+    return;
+  }
+
+  // 2. Stratégie "Cache First" pour le reste (Images, CSS, etc.) pour la rapidité
+  event.respondWith(
+    caches.match(event.request).then(response => {
+      return response || fetch(event.request);
     })
   );
 });
