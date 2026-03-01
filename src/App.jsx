@@ -6,7 +6,6 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
-
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -387,7 +386,14 @@ export default function App() {
       // Tant qu'on est sur l'onglet "scan", la caméra tourne. (Sauf si on est déco)
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          // Demande de haute résolution (HD) pour une meilleure netteté
+          stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+              facingMode: 'environment',
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
+            } 
+          });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             
@@ -435,10 +441,15 @@ export default function App() {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth || 600;
-      canvas.height = video.videoHeight || 400;
+      
+      // On utilise la vraie résolution native de la vidéo HD
+      canvas.width = video.videoWidth || 1920;
+      canvas.height = video.videoHeight || 1080;
+      
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      setCapturedPhoto(canvas.toDataURL('image/jpeg'));
+      
+      // Compression JPEG à 95% de qualité pour éviter les pertes de détails (Premium)
+      setCapturedPhoto(canvas.toDataURL('image/jpeg', 0.95));
       setViewState('photo-preview');
     }
   };
@@ -448,6 +459,19 @@ export default function App() {
     setIsUploading(true);
 
     try {
+      // SÉCURITÉ ANTI-DOUBLON ULTIME : vérifier juste avant l'envoi
+      const { data: existing } = await supabase
+        .from('articles_a_creer')
+        .select('id')
+        .eq('code_barre', scannedCode)
+        .maybeSingle();
+
+      if (existing) {
+        showToast("Cet article a déjà été soumis par quelqu'un d'autre !");
+        resetToScan();
+        return;
+      }
+
       const res = await fetch(capturedPhoto);
       const blob = await res.blob();
       const fileName = `${scannedCode}_${Date.now()}.jpg`;
