@@ -6,6 +6,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -39,14 +40,10 @@ export default function App() {
   const [manualSearchResults, setManualSearchResults] = useState([]);
   const [isManualSearching, setIsManualSearching] = useState(false);
   
-  // NOUVEAU: État pour l'animation de focus de la caméra
   const [focusPoint, setFocusPoint] = useState(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-
-  const longPressTimer = useRef(null);
-  const isLongPress = useRef(false);
 
   // --- VERROUILLAGE INTELLIGENT DE L'ORIENTATION ---
   useEffect(() => {
@@ -310,28 +307,6 @@ export default function App() {
     }
   };
 
-  const handleItemPressStart = (item) => {
-    isLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      isLongPress.current = true;
-      if (navigator.vibrate) navigator.vibrate(50);
-      if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique ?`)) {
-        deleteFromHistory(item.code_barre);
-      }
-    }, 700); 
-  };
-
-  const handleItemPressEnd = () => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  };
-
-  const handleHistoryItemClick = (item) => {
-    if (isLongPress.current) return; 
-    setCurrentProduct(item);
-    setIsProductExpanded(true); 
-    setViewState('product'); 
-  };
-
   useEffect(() => {
     let timeoutId;
     if (viewState === 'product' && !isProductExpanded) {
@@ -354,7 +329,7 @@ export default function App() {
     setTouchStart(null); setTouchEnd(null);
   };
 
-  // --- NOUVEAU: GESTION DU TAP-TO-FOCUS ---
+  // --- GESTION DU TAP-TO-FOCUS ---
   const handleCameraTap = async (e) => {
     // Ignorer si l'utilisateur a cliqué sur un bouton ou une icône par dessus la vidéo
     if (e.target.closest('button') || e.target.closest('input')) return;
@@ -933,18 +908,18 @@ export default function App() {
         ) : (
           history.map((item) => (
             <div key={item.code_barre} 
-                 onClick={() => handleHistoryItemClick(item)}
-                 onTouchStart={() => handleItemPressStart(item)}
-                 onTouchEnd={handleItemPressEnd}
-                 onTouchMove={handleItemPressEnd}
-                 onMouseDown={() => handleItemPressStart(item)}
-                 onMouseUp={handleItemPressEnd}
-                 onMouseLeave={handleItemPressEnd}
-                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98] select-none">
+                 onClick={() => { 
+                    setCurrentProduct(item); 
+                    setIsProductExpanded(true); 
+                    setViewState('product'); 
+                 }} 
+                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 md:gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
+              
               <div className="w-16 h-16 md:w-20 md:h-20 bg-white border border-slate-100 rounded-xl md:rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
-                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg pointer-events-none" />
+                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
               </div>
-              <div className="flex-1 min-w-0 pointer-events-none">
+              
+              <div className="flex-1 min-w-0">
                 <h4 className="text-lg md:text-xl font-bold text-slate-800 truncate mb-0.5 flex items-center gap-2">
                   {item.designation || 'Article'}
                   {item.statut === 'En attente' && (
@@ -955,6 +930,21 @@ export default function App() {
                 </h4>
                 <p className="text-sm md:text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-1.5">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
               </div>
+
+              {/* BOUTON SUPPRIMER DÉDIÉ (remplace l'appui long) */}
+              <button 
+                 onClick={(e) => {
+                    e.stopPropagation(); // Évite d'ouvrir la fiche quand on clique sur supprimer
+                    if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique ?`)) {
+                       deleteFromHistory(item.code_barre);
+                    }
+                 }}
+                 className="p-2.5 md:p-3 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors active:bg-red-100 shrink-0"
+                 title="Supprimer de l'historique"
+              >
+                 <Trash2 size={20} />
+              </button>
+
             </div>
           ))
         )}
@@ -1089,9 +1079,11 @@ export default function App() {
            {viewState === 'take-photo' && renderTakePhotoUI()}
            {viewState === 'photo-preview' && renderPhotoPreview()}
            {viewState === 'manual-entry' && renderManualEntry()}
-           {viewState === 'product' && renderProductOverlay()}
-           {viewState === 'not-found' && renderNotFoundOverlay()}
         </div>
+
+        {/* OVERLAYS DÉPLACÉS ICI POUR RECOUVRIR AUSSI L'HISTORIQUE ! */}
+        {viewState === 'product' && renderProductOverlay()}
+        {viewState === 'not-found' && renderNotFoundOverlay()}
 
       </main>
 
