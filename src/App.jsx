@@ -213,14 +213,14 @@ export default function App() {
     setTouchEnd(null);
   };
 
-  // Moteur Camera Scan Natif
+  // Moteur Camera Scan Natif : LA CAMÉRA NE S'ÉTEINT PLUS
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
 
     const startScanner = async () => {
-      // La caméra reste active tout le temps dans l'onglet scan, même pour "take-photo" (en fond)
-      if (session && activeTab === 'scan' && (viewState === 'camera' || viewState === 'product' || viewState === 'not-found' || viewState === 'take-photo') && videoRef.current && navigator.mediaDevices) {
+      // Tant qu'on est sur l'onglet "scan", la caméra tourne. (Sauf si on est déco)
+      if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
           if (videoRef.current) {
@@ -230,7 +230,7 @@ export default function App() {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
                 
-                // On scanne uniquement si on n'est pas en train d'interagir avec les fiches produit ou formulaires
+                // On scanne uniquement si on n'est pas en train d'interagir avec l'UI
                 if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product' || stateRef.current.viewState === 'not-found') 
                     && !stateRef.current.isScanning 
                     && !stateRef.current.isProductExpanded 
@@ -241,9 +241,8 @@ export default function App() {
                       const code = barcodes[0].rawValue;
                       const now = Date.now();
                       
-                      // SCAN FLUIDE: 
-                      // 1. Un nouveau code met à jour l'écran immédiatement (passe à la nouvelle fiche)
-                      // 2. Le MÊME code est ignoré sauf si on reste dessus 2.5 secondes
+                      // 1. Nouveau code : recherche immédiate
+                      // 2. Ancien code : on attend 2.5 secondes
                       if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2500)) {
                          handleSearch(code);
                       }
@@ -266,6 +265,7 @@ export default function App() {
       if (stream) stream.getTracks().forEach(track => track.stop());
     };
   }, [activeTab, session]); 
+  // Remarque : viewState a été retiré des dépendances. La caméra ne sera plus détruite !
 
   const takePicture = () => {
     if (videoRef.current && canvasRef.current) {
@@ -382,14 +382,12 @@ export default function App() {
     );
   }
 
-  // --- VUES SECONDAIRES ---
+  // --- OVERLAYS DE L'UI ---
 
-  const renderCameraView = () => (
-    <div className="absolute inset-0 w-full h-full bg-slate-900 overflow-hidden flex flex-col justify-center items-center">
-      <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover opacity-80" />
-      
+  const renderScannerUI = () => (
+    <>
       {/* Cadre de visée avec coins arrondis doux */}
-      {(viewState === 'camera' || (viewState === 'product' && !isProductExpanded) || viewState === 'not-found') && (
+      {(!isProductExpanded) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="w-3/4 max-w-md aspect-video relative rounded-2xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)]">
             <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-blue-500 rounded-tl-2xl"></div>
@@ -408,7 +406,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Boutons d'action */}
+      {/* Boutons d'action visibles uniquement si l'écran est dégagé */}
       {viewState === 'camera' && (
         <>
           <div className="absolute top-6 right-6 flex gap-4 z-20">
@@ -423,11 +421,9 @@ export default function App() {
           </div>
         </>
       )}
-    </div>
+    </>
   );
 
-  // --- OVERLAYS: PRODUIT ET INTROUVABLE ---
-  
   const renderProductOverlay = () => {
     if (!currentProduct) return null;
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
@@ -445,7 +441,6 @@ export default function App() {
           <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
           
           <div className="p-5 flex gap-4 items-center">
-            {/* Image avec bords arrondis doux */}
             <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm">
               <img src={displayImage} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
             </div>
@@ -456,7 +451,7 @@ export default function App() {
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
             
-            {/* Bouton pour fermer et statut */}
+            {/* Bouton pour fermer manuellement et statut */}
             <div className="flex flex-col items-end shrink-0 ml-2 gap-3">
                <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition">
                  <X size={24} />
@@ -470,7 +465,7 @@ export default function App() {
       );
     }
 
-    // 2. MODE PLEIN ÉCRAN (Pas de bords arrondis sur le conteneur principal, mais arrondi à l'intérieur)
+    // 2. MODE PLEIN ÉCRAN
     return (
       <div 
         className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0"
@@ -478,8 +473,6 @@ export default function App() {
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
-        
-        {/* Header flush contre les bords */}
         <div className="relative h-72 bg-white flex justify-center items-center shadow-sm p-8 pt-16 border-b border-slate-200">
            <button 
              onClick={(e) => { 
@@ -495,7 +488,6 @@ export default function App() {
         </div>
 
         <div className="max-w-3xl mx-auto -mt-6 relative z-20 px-4 space-y-4">
-           {/* Cartes internes avec des bords bien arrondis (rounded-3xl) */}
            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-start mb-4 gap-4">
                  <div className="flex-1">
@@ -610,28 +602,26 @@ export default function App() {
     </div>
   );
 
-  // L'écran de prise de photo devient un simple overlay au-dessus de la caméra principale (pas de redémarrage vidéo)
-  const renderTakePhoto = () => (
-    <div className="absolute inset-0 z-[60] flex flex-col pointer-events-none animate-in fade-in duration-200">
-      <div className="absolute top-6 left-6 z-10 pointer-events-auto">
+  // Écran "Appareil photo" superposé sur la vidéo principale
+  const renderTakePhotoUI = () => (
+    <div className="absolute inset-0 z-[60] flex flex-col animate-in fade-in duration-200">
+      <div className="absolute top-6 left-6 z-10">
          <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg"><ArrowLeft size={28} /></button>
       </div>
       
-      <div className="flex-1 relative flex items-center justify-center">
-        {/* Le flux vidéo principal reste derrière, ici on n'affiche que les guides */}
+      {/* Zone centrale transparente pour laisser voir la vidéo en fond */}
+      <div className="flex-1 relative flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 border-[15px] border-black/40"></div>
-        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center pointer-events-auto">
+        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center">
           <span className="bg-black/50 text-white px-5 py-3 rounded-full backdrop-blur-sm text-sm font-bold shadow-lg">Cadrez la pièce</span>
         </div>
       </div>
       
-      <div className="h-48 bg-black/90 flex items-center justify-center pb-8 border-t border-white/10 pointer-events-auto">
+      <div className="h-48 bg-black/90 flex items-center justify-center pb-8 border-t border-white/10">
         <button onClick={takePicture} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform bg-black hover:bg-white/10">
           <div className="w-20 h-20 bg-white rounded-full"></div>
         </button>
       </div>
-      
-      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 
@@ -786,23 +776,26 @@ export default function App() {
         </button>
       </nav>
 
-      {/* MAIN AREA - Flush (collé aux bords de l'écran) */}
+      {/* MAIN AREA - Conteneur global de Scan */}
       <main className="flex-1 relative overflow-hidden bg-slate-900 h-full">
-        <div className={`w-full h-full max-md:pb-24 ${activeTab === 'history' ? 'block' : 'hidden'}`}>
+        
+        <div className={`w-full h-full max-md:pb-24 ${activeTab === 'history' ? 'block' : 'hidden'} bg-slate-50`}>
            {renderHistory()}
         </div>
         
-        <div className={`w-full h-full ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
-          {/* La caméra tourne en fond dans l'onglet scan, sauf si on est en photo-preview */}
-          {(viewState === 'camera' || viewState === 'product' || viewState === 'not-found' || viewState === 'take-photo') && renderCameraView()}
-          {viewState === 'manual-entry' && renderManualEntry()}
-          {viewState === 'take-photo' && renderTakePhoto()}
-          {viewState === 'photo-preview' && renderPhotoPreview()}
+        {/* La vidéo reste montée en permanence dans le DOM dès qu'on est sur l'onglet Scan */}
+        <div className={`w-full h-full relative ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
+           <video ref={videoRef} autoPlay playsInline muted className={`absolute inset-0 w-full h-full object-cover ${(viewState === 'camera' || viewState === 'take-photo' || viewState === 'product' || viewState === 'not-found') ? 'opacity-80' : 'opacity-0'}`} />
+           <canvas ref={canvasRef} className="hidden" />
+
+           {(viewState === 'camera' || viewState === 'product' || viewState === 'not-found') && renderScannerUI()}
+           {viewState === 'take-photo' && renderTakePhotoUI()}
+           {viewState === 'photo-preview' && renderPhotoPreview()}
+           {viewState === 'manual-entry' && renderManualEntry()}
+           {viewState === 'product' && renderProductOverlay()}
+           {viewState === 'not-found' && renderNotFoundOverlay()}
         </div>
 
-        {/* OVERLAYS GLOBAUX */}
-        {viewState === 'product' && renderProductOverlay()}
-        {viewState === 'not-found' && renderNotFoundOverlay()}
       </main>
 
       <style dangerouslySetInnerHTML={{__html: `
