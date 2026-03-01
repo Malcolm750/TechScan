@@ -6,6 +6,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -18,7 +19,6 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   
-  // Notification in-app pour remplacer les alert()
   const [toastMessage, setToastMessage] = useState(null);
 
   const [activeTab, setActiveTab] = useState('scan');
@@ -27,7 +27,6 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
-  // États pour le "tiroir" (Bottom Sheet) et le tactile (Swipe)
   const [isProductExpanded, setIsProductExpanded] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
@@ -44,25 +43,23 @@ export default function App() {
   const longPressTimer = useRef(null);
   const isLongPress = useRef(false);
 
-  // --- VERROUILLAGE DE L'ORIENTATION EN PAYSAGE ---
+  // --- VERROUILLAGE INTELLIGENT DE L'ORIENTATION ---
   useEffect(() => {
     const lockOrientation = async () => {
-      // On vérifie si le navigateur de la tablette autorise le verrouillage
       if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
-        try {
-          // On demande le mode paysage (landscape)
-          await window.screen.orientation.lock('landscape');
-          console.log("Orientation verrouillée en mode paysage");
-        } catch (error) {
-          // Le verrouillage échoue souvent si l'app n'est pas en plein écran ou pas installée
-          console.log("Impossible de verrouiller l'orientation :", error);
+        // On ne force le mode paysage QUE sur les grands écrans (tablettes/desktop)
+        if (window.innerWidth >= 768) {
+          try {
+            await window.screen.orientation.lock('landscape');
+          } catch (error) {
+            console.log("Verrouillage orientation paysage ignoré.");
+          }
         }
       }
     };
     lockOrientation();
   }, []);
 
-  // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les bugs de boucle) ---
   const stateRef = useRef({ viewState, isScanning, scannedCode: '', lastScanTime: 0, isProductExpanded: false });
   useEffect(() => {
     stateRef.current.viewState = viewState;
@@ -76,11 +73,9 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // --- FETCH HISTORIQUE DEPUIS SUPABASE (Corrigé avec scanned_at) ---
   const fetchHistory = async (userId) => {
     if (!supabase) return;
     try {
-      // On trie en utilisant 'scanned_at' car c'est le nom de ta colonne dans Supabase !
       const { data, error } = await supabase
         .from('historique_scans')
         .select('*')
@@ -88,11 +83,7 @@ export default function App() {
         .order('scanned_at', { ascending: false })
         .limit(50);
         
-      if (error) {
-        console.error("Détail de l'erreur Supabase :", error);
-        showToast("Erreur BDD : " + error.message);
-        return;
-      }
+      if (error) throw error;
       
       const uniqueHistory = [];
       const codes = new Set();
@@ -100,27 +91,22 @@ export default function App() {
       if (data) {
          data.forEach(row => {
            let detailsObj = row.details;
-           
-           // Sécurité : si Supabase renvoie du texte au lieu d'un objet JSON, on le transforme
            if (typeof detailsObj === 'string') {
              try { detailsObj = JSON.parse(detailsObj); } 
              catch (err) { console.error("Format JSON invalide:", row); }
            }
-
            if (detailsObj && !codes.has(row.code_barre)) {
              codes.add(row.code_barre);
              uniqueHistory.push(detailsObj);
            }
          });
       }
-      
       setHistory(uniqueHistory);
     } catch (e) {
-      console.error("Erreur inattendue fetch historique:", e);
+      console.error("Erreur fetch historique:", e);
     }
   };
 
-  // --- 1. GESTION DE L'AUTHENTIFICATION ---
   useEffect(() => {
     if (!supabase) {
        const savedHistory = localStorage.getItem('techscan_history');
@@ -182,12 +168,10 @@ export default function App() {
     if (supabase) await supabase.auth.signOut();
   };
 
-  // --- 2. LOGIQUE DE L'APPLICATION ---
   const handleSearch = async (code) => {
     setIsScanning(true);
     setScannedCode(code);
     
-    // Mise à jour immédiate de la réf pour bloquer les scans multiples inutiles
     stateRef.current.isScanning = true;
     stateRef.current.scannedCode = code;
     stateRef.current.lastScanTime = Date.now();
@@ -201,25 +185,13 @@ export default function App() {
     }
 
     try {
-      // 1. RECHERCHE DANS LE CATALOGUE VALIDÉ
-      const { data: product, error } = await supabase
-        .from('articles')
-        .select('*')
-        .eq('code_barre', code)
-        .maybeSingle();
-        
+      const { data: product, error } = await supabase.from('articles').select('*').eq('code_barre', code).maybeSingle();
       if (error) throw error;
 
       let finalProduct = product;
 
-      // 2. RECHERCHE DANS LA FILE D'ATTENTE SI INCONNU
       if (!finalProduct) {
-        const { data: pendingData, error: pendingError } = await supabase
-          .from('articles_a_creer')
-          .select('*')
-          .eq('code_barre', code)
-          .limit(1);
-
+        const { data: pendingData, error: pendingError } = await supabase.from('articles_a_creer').select('*').eq('code_barre', code).limit(1);
         if (pendingError) throw pendingError;
 
         if (pendingData && pendingData.length > 0) {
@@ -255,7 +227,6 @@ export default function App() {
   };
 
   const addToHistory = async (product) => {
-    // 1. Mise à jour immédiate de l'interface
     setHistory(prevHistory => {
       const newEntry = { ...product, scanDate: new Date().toISOString() };
       const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
@@ -263,7 +234,6 @@ export default function App() {
       return newHistory;
     });
 
-    // 2. Sauvegarde en arrière-plan sur Supabase
     if (!supabase || !session) return;
     try {
       await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: product.code_barre });
@@ -283,13 +253,8 @@ export default function App() {
     if (window.confirm("Voulez-vous vraiment vider tout l'historique ?")) {
       setHistory([]);
       if (!supabase) localStorage.removeItem('techscan_history');
-      
       if (supabase && session) {
-        try {
-          await supabase.from('historique_scans').delete().eq('user_id', session.user.id);
-        } catch(e) {
-          console.error("Erreur suppression historique", e);
-        }
+        try { await supabase.from('historique_scans').delete().eq('user_id', session.user.id); } catch(e) {}
       }
     }
   };
@@ -302,11 +267,7 @@ export default function App() {
     });
 
     if (supabase && session) {
-      try {
-        await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: codeBarre });
-      } catch(e) {
-        console.error("Erreur suppression article historique", e);
-      }
+      try { await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: codeBarre }); } catch(e) {}
     }
   };
 
@@ -322,9 +283,7 @@ export default function App() {
   };
 
   const handleItemPressEnd = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-    }
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
   };
 
   const handleHistoryItemClick = (item) => {
@@ -334,59 +293,35 @@ export default function App() {
     setViewState('product'); 
   };
 
-
-  // FERMETURE AUTOMATIQUE (5 secondes)
   useEffect(() => {
     let timeoutId;
     if (viewState === 'product' && !isProductExpanded) {
-      timeoutId = setTimeout(() => {
-        resetToScan();
-      }, 5000);
+      timeoutId = setTimeout(() => { resetToScan(); }, 5000);
     }
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-    };
+    return () => { if (timeoutId) clearTimeout(timeoutId); };
   }, [viewState, isProductExpanded]);
 
-  // GESTION DES SWIPES (Tactile)
   const handleTouchStart = (e) => {
     setTouchEnd(null);
     setTouchStart(e.targetTouches[0].clientY);
   };
-  const handleTouchMove = (e) => {
-    setTouchEnd(e.targetTouches[0].clientY);
-  };
+  const handleTouchMove = (e) => { setTouchEnd(e.targetTouches[0].clientY); };
   const handleTouchEnd = () => {
     if (!touchStart || !touchEnd) return;
     const distance = touchStart - touchEnd;
-    
-    // Swipe vers le haut (distance positive)
-    if (distance > 50 && !isProductExpanded) {
-      setIsProductExpanded(true);
-    }
-    // Swipe vers le bas (distance négative)
-    if (distance < -50 && !isProductExpanded) {
-      resetToScan();
-    }
-    if (distance < -50 && isProductExpanded) {
-      setIsProductExpanded(false);
-    }
-    
-    // Reset
-    setTouchStart(null);
-    setTouchEnd(null);
+    if (distance > 50 && !isProductExpanded) setIsProductExpanded(true);
+    if (distance < -50 && !isProductExpanded) resetToScan();
+    if (distance < -50 && isProductExpanded) setIsProductExpanded(false);
+    setTouchStart(null); setTouchEnd(null);
   };
 
-  // Moteur Camera Scan Natif : LA CAMÉRA NE S'ÉTEINT PLUS
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
 
     const startScanner = async () => {
-      // Tant qu'on est sur l'onglet "scan", la caméra tourne. (Sauf si on est déco)
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
-          // Demande de haute résolution (HD) pour une meilleure netteté
           stream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
               facingMode: 'environment',
@@ -400,8 +335,6 @@ export default function App() {
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
-                
-                // On scanne uniquement si on n'est pas en train d'interagir avec l'UI
                 if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product' || stateRef.current.viewState === 'not-found') 
                     && !stateRef.current.isScanning 
                     && !stateRef.current.isProductExpanded 
@@ -412,13 +345,13 @@ export default function App() {
                       const code = barcodes[0].rawValue;
                       const now = Date.now();
                       
-                      // 1. Nouveau code : recherche immédiate
-                      // 2. Ancien code : on attend 2.5 secondes
                       if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2500)) {
+                         // VIBRATION HAPTIQUE AU SCAN REUSSI
+                         if (navigator.vibrate) navigator.vibrate([50]);
                          handleSearch(code);
                       }
                     }
-                  } catch (e) { /* silent */ }
+                  } catch (e) {}
                 }
               }, 400);
             }
@@ -428,9 +361,7 @@ export default function App() {
         }
       }
     };
-
     startScanner();
-
     return () => {
       if (scanInterval) clearInterval(scanInterval);
       if (stream) stream.getTracks().forEach(track => track.stop());
@@ -441,14 +372,9 @@ export default function App() {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      
-      // On utilise la vraie résolution native de la vidéo HD
       canvas.width = video.videoWidth || 1920;
       canvas.height = video.videoHeight || 1080;
-      
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      
-      // Compression JPEG à 95% de qualité pour éviter les pertes de détails (Premium)
       setCapturedPhoto(canvas.toDataURL('image/jpeg', 0.95));
       setViewState('photo-preview');
     }
@@ -459,13 +385,7 @@ export default function App() {
     setIsUploading(true);
 
     try {
-      // SÉCURITÉ ANTI-DOUBLON ULTIME : vérifier juste avant l'envoi
-      const { data: existing } = await supabase
-        .from('articles_a_creer')
-        .select('id')
-        .eq('code_barre', scannedCode)
-        .maybeSingle();
-
+      const { data: existing } = await supabase.from('articles_a_creer').select('id').eq('code_barre', scannedCode).maybeSingle();
       if (existing) {
         showToast("Cet article a déjà été soumis par quelqu'un d'autre !");
         resetToScan();
@@ -487,15 +407,9 @@ export default function App() {
       if (dbError) throw dbError;
       
       const pendingArticle = {
-        code_barre: scannedCode,
-        photo: publicUrlData.publicUrl,
-        designation: 'En cours de création',
-        marque: 'Validation en attente',
-        reference_fabricant: 'N/A',
-        statut: 'En attente'
+        code_barre: scannedCode, photo: publicUrlData.publicUrl, designation: 'En cours de création', marque: 'Validation en attente', reference_fabricant: 'N/A', statut: 'En attente'
       };
       addToHistory(pendingArticle);
-
       showToast("Article enregistré avec succès !");
       resetToScan();
     } catch (error) {
@@ -507,14 +421,14 @@ export default function App() {
 
   const resetToScan = () => {
     setViewState('camera');
-    setScannedCode(''); // Vider le code permet un rescan immédiat sans attendre 2.5s
+    setScannedCode('');
     setManualCode('');
     setCurrentProduct(null);
     setCapturedPhoto(null);
     setIsProductExpanded(false);
   };
 
-  // --- 3. VUES DE L'APPLICATION ---
+  // --- VUES DE L'APPLICATION ---
 
   if (!supabase) {
     return (
@@ -539,9 +453,7 @@ export default function App() {
           </div>
           <h1 className="text-3xl font-extrabold text-white text-center mb-2">TechScan</h1>
           <p className="text-slate-400 text-center mb-8">Connectez-vous pour accéder au magasin</p>
-
           {authError && <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-2xl mb-6 text-sm text-center">{authError}</div>}
-
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
               <label className="text-slate-300 text-sm font-bold mb-2 block">Identifiant (Email)</label>
@@ -554,14 +466,7 @@ export default function App() {
               <label className="text-slate-300 text-sm font-bold mb-2 block">Mot de passe</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500"><Lock size={20} /></div>
-                <input 
-                  type={showPassword ? "text" : "password"} 
-                  required 
-                  className="w-full bg-slate-900 border border-slate-700 text-white rounded-2xl py-4 pl-12 pr-12 focus:outline-none focus:border-blue-500 transition-colors" 
-                  placeholder="••••••••" 
-                  value={password} 
-                  onChange={(e) => setPassword(e.target.value)} 
-                />
+                <input type={showPassword ? "text" : "password"} required className="w-full bg-slate-900 border border-slate-700 text-white rounded-2xl py-4 pl-12 pr-12 focus:outline-none focus:border-blue-500 transition-colors" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
                 <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-500 hover:text-slate-300 transition-colors">
                   {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                 </button>
@@ -580,41 +485,39 @@ export default function App() {
     );
   }
 
-  // --- OVERLAYS DE L'UI ---
-
   const renderScannerUI = () => (
     <>
-      {/* Cadre de visée avec coins arrondis doux */}
+      {/* Zone de scan repensée : Carrée sur mobile (portrait), Rectangulaire sur tablette */}
       {(!isProductExpanded) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-          <div className="w-3/4 max-w-md aspect-video relative rounded-2xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)]">
-            <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-blue-500 rounded-tl-2xl"></div>
-            <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-blue-500 rounded-tr-2xl"></div>
-            <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-blue-500 rounded-bl-2xl"></div>
-            <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-blue-500 rounded-br-2xl"></div>
+          <div className="w-64 h-64 sm:w-72 sm:h-72 md:w-3/4 md:h-auto md:max-w-md md:aspect-video relative rounded-3xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)] bg-black/10 backdrop-blur-[1px]">
+            <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-blue-500 rounded-tl-3xl"></div>
+            <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-blue-500 rounded-tr-3xl"></div>
+            <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-blue-500 rounded-bl-3xl"></div>
+            <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-blue-500 rounded-br-3xl"></div>
             
-            <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-2xl">
+            <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-3xl">
                {isScanning ? (
                   <div className="w-full h-1 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.8)] animate-pulse" style={{ animation: 'scanline 1.5s linear infinite' }}></div>
                ) : (
-                  <span className="text-white/90 text-sm font-bold bg-black/50 px-4 py-2 rounded-full backdrop-blur-md">Alignez le code-barres</span>
+                  <span className="text-white/90 text-sm font-bold bg-black/60 px-5 py-2.5 rounded-full backdrop-blur-md">Alignez le code</span>
                )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Boutons d'action visibles uniquement si l'écran est dégagé */}
       {viewState === 'camera' && (
         <>
-          <div className="absolute top-6 right-6 flex gap-4 z-20">
-            <button onClick={() => setFlashOn(!flashOn)} className={`p-4 rounded-full backdrop-blur-md transition-colors shadow-lg ${flashOn ? 'bg-yellow-400 text-black' : 'bg-black/40 text-white hover:bg-black/60'}`}>
+          <div className="absolute top-20 right-4 md:top-6 md:right-6 flex gap-4 z-20">
+            <button onClick={() => setFlashOn(!flashOn)} className={`p-4 md:p-4 rounded-full backdrop-blur-md transition-colors shadow-lg ${flashOn ? 'bg-yellow-400 text-black' : 'bg-black/50 text-white hover:bg-black/70'}`}>
               {flashOn ? <Zap size={28} /> : <ZapOff size={28} />}
             </button>
           </div>
-          <div className="absolute bottom-10 md:bottom-12 w-full px-8 flex justify-center items-center z-20 max-md:pb-20">
-             <button onClick={() => setViewState('manual-entry')} className="bg-black/60 border border-white/20 backdrop-blur-md text-white px-6 py-4 rounded-3xl flex items-center gap-3 font-semibold hover:bg-black/80 transition shadow-xl active:scale-95">
-                <Search size={24} /> Saisie manuelle
+          {/* Bouton de saisie manuelle remonté sur mobile pour ne pas toucher la barre de navigation */}
+          <div className="absolute bottom-24 md:bottom-12 w-full px-8 flex justify-center items-center z-20">
+             <button onClick={() => setViewState('manual-entry')} className="bg-black/70 border border-white/20 backdrop-blur-md text-white px-6 py-4 rounded-full flex items-center gap-3 font-semibold hover:bg-black/90 transition shadow-xl active:scale-95">
+                <Search size={22} /> Saisie manuelle
              </button>
           </div>
         </>
@@ -627,35 +530,33 @@ export default function App() {
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
-      // 1. MODE COMPACT (Tiroir Yuka arrondi avec gestes Swipe)
+      // MODE COMPACT MOBILE : Bottom-16 permet de se placer exactement au dessus de la barre de navigation native (h-16)
       return (
         <div 
-          className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.2)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-8 max-md:pb-32"
+          className="absolute bottom-16 md:bottom-0 left-0 right-0 bg-white rounded-t-[2rem] shadow-[0_-15px_40px_rgba(0,0,0,0.15)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-4 md:pb-8"
           onClick={() => setIsProductExpanded(true)}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
-          <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
+          <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mt-3 mb-2"></div>
           
-          <div className="p-5 flex gap-4 items-center">
-            <div className="w-24 h-24 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm">
+          <div className="px-5 pb-2 flex gap-4 items-center">
+            <div className="w-20 h-20 md:w-28 md:h-28 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shrink-0 p-2 shadow-sm">
               <img src={displayImage} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
             </div>
             
             <div className="flex-1 min-w-0 flex flex-col justify-center">
-               <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-1">{currentProduct.designation || 'Article'}</h3>
-               <p className="text-md font-bold text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'}</p>
+               <h3 className="text-lg md:text-2xl font-extrabold text-slate-800 leading-tight truncate mb-0.5">{currentProduct.designation || 'Article'}</h3>
+               <p className="text-sm font-bold text-slate-500 truncate">{currentProduct.marque || 'Marque N/A'}</p>
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
             
-            {/* Bouton pour fermer manuellement et statut */}
-            <div className="flex flex-col items-end shrink-0 ml-2 gap-3">
-               <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition">
-                 <X size={24} />
+            <div className="flex flex-col items-end shrink-0 ml-1 gap-2">
+               <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition active:bg-slate-200">
+                 <X size={20} />
                </button>
-               <div className="flex items-center gap-1.5">
-                 {/* Badge dynamique : vert si Actif, orange si "En attente" */}
+               <div className="flex items-center gap-1.5 mr-1">
                  <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut === 'En attente' ? 'bg-orange-500 shadow-sm animate-pulse' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
                </div>
             </div>
@@ -664,38 +565,37 @@ export default function App() {
       );
     }
 
-    // 2. MODE PLEIN ÉCRAN
+    // MODE PLEIN ÉCRAN : z-[100] pour recouvrir la barre de navigation sur mobile
     return (
       <div 
-        className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0"
+        className="absolute inset-0 bg-slate-50 z-[100] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-10 md:pb-0"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
-        <div className="relative h-72 bg-white flex justify-center items-center shadow-sm p-8 pt-16 border-b border-slate-200">
+        <div className="relative h-64 md:h-72 bg-white flex justify-center items-center shadow-sm p-8 pt-16 border-b border-slate-200">
            <button 
              onClick={(e) => { 
                 e.stopPropagation(); 
                 activeTab === 'history' ? resetToScan() : setIsProductExpanded(false); 
              }} 
-             className="absolute top-6 left-6 p-4 rounded-full bg-slate-100 text-slate-800 z-10 hover:bg-slate-200 transition shadow-sm"
+             className="absolute top-4 left-4 md:top-6 md:left-6 p-3 md:p-4 rounded-full bg-slate-100 text-slate-800 z-10 hover:bg-slate-200 transition shadow-sm active:scale-95"
            >
              {activeTab === 'history' ? <ArrowLeft size={24} /> : <ChevronDown size={24} />}
            </button>
-           
            <img src={displayImage} alt={currentProduct.designation} className="max-w-full max-h-full object-contain drop-shadow-sm" />
         </div>
 
         <div className="max-w-3xl mx-auto -mt-6 relative z-20 px-4 space-y-4">
-           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-              <div className="flex justify-between items-start mb-4 gap-4">
+           <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-slate-100">
+              <div className="flex justify-between items-start mb-3 gap-4">
                  <div className="flex-1">
-                    <h1 className="text-3xl md:text-4xl font-extrabold text-slate-800 leading-tight">{currentProduct.designation || 'Article'}</h1>
-                    <p className="text-lg text-slate-500 font-bold mt-1">{currentProduct.marque || 'Marque N/A'}</p>
+                    <h1 className="text-2xl md:text-4xl font-extrabold text-slate-800 leading-tight">{currentProduct.designation || 'Article'}</h1>
+                    <p className="text-md md:text-lg text-slate-500 font-bold mt-1">{currentProduct.marque || 'Marque N/A'}</p>
                  </div>
                  {currentProduct.statut && (
-                   <div className={`px-4 py-2 rounded-2xl flex flex-col items-center justify-center border ${currentProduct.statut === 'Actif' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
-                      <span className="text-sm font-bold uppercase tracking-wider">{currentProduct.statut}</span>
+                   <div className={`px-3 py-1.5 md:px-4 md:py-2 rounded-2xl flex flex-col items-center justify-center border ${currentProduct.statut === 'Actif' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
+                      <span className="text-xs md:text-sm font-bold uppercase tracking-wider">{currentProduct.statut}</span>
                    </div>
                  )}
               </div>
@@ -708,49 +608,49 @@ export default function App() {
            </div>
 
            <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-              <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
-                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                   <Package size={20} className="text-blue-500" /> Détails techniques
+              <div className="px-5 py-3 md:px-6 md:py-4 bg-slate-50 border-b border-slate-100">
+                 <h3 className="text-md md:text-lg font-bold text-slate-800 flex items-center gap-2">
+                   <Package size={18} className="text-blue-500" /> Détails techniques
                  </h3>
               </div>
               
-              <div className="p-2">
-                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+              <div className="p-1 md:p-2">
+                 <div className="p-3 md:p-4 border-b border-slate-50 flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><Search size={20} /></div>
-                       <div>
-                          <p className="text-sm font-bold text-slate-800">Code Barre</p>
-                          <p className="text-sm text-slate-500 font-mono font-medium mt-1">{currentProduct.code_barre}</p>
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0"><Search size={18} /></div>
+                       <div className="min-w-0">
+                          <p className="text-xs md:text-sm font-bold text-slate-800">Code Barre</p>
+                          <p className="text-xs md:text-sm text-slate-500 font-mono font-medium mt-0.5 truncate">{currentProduct.code_barre}</p>
                        </div>
                     </div>
                  </div>
                  
-                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                 <div className="p-3 md:p-4 border-b border-slate-50 flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><AlertCircle size={20} /></div>
-                       <div>
-                          <p className="text-sm font-bold text-slate-800">Réf. Fabricant</p>
-                          <p className="text-sm text-slate-500 font-mono font-medium mt-1">{currentProduct.reference_fabricant || 'Non renseignée'}</p>
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0"><AlertCircle size={18} /></div>
+                       <div className="min-w-0">
+                          <p className="text-xs md:text-sm font-bold text-slate-800">Réf. Fabricant</p>
+                          <p className="text-xs md:text-sm text-slate-500 font-mono font-medium mt-0.5 truncate">{currentProduct.reference_fabricant || 'Non renseignée'}</p>
                        </div>
                     </div>
                  </div>
 
-                 <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                 <div className="p-3 md:p-4 border-b border-slate-50 flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><MapPin size={20} /></div>
-                       <div>
-                          <p className="text-sm font-bold text-slate-800">Emplacement / Magasin</p>
-                          <p className="text-sm font-medium text-slate-500 mt-1">{currentProduct.site_rattachement || 'Non défini'}</p>
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0"><MapPin size={18} /></div>
+                       <div className="min-w-0">
+                          <p className="text-xs md:text-sm font-bold text-slate-800">Emplacement / Magasin</p>
+                          <p className="text-xs md:text-sm font-medium text-slate-500 mt-0.5 truncate">{currentProduct.site_rattachement || 'Non défini'}</p>
                        </div>
                     </div>
                  </div>
 
-                 <div className="p-4 flex items-center justify-between">
+                 <div className="p-3 md:p-4 flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><History size={20} /></div>
-                       <div>
-                          <p className="text-sm font-bold text-slate-800">Date d'ajout</p>
-                          <p className="text-sm font-medium text-slate-500 mt-1">
+                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0"><History size={18} /></div>
+                       <div className="min-w-0">
+                          <p className="text-xs md:text-sm font-bold text-slate-800">Date d'ajout</p>
+                          <p className="text-xs md:text-sm font-medium text-slate-500 mt-0.5 truncate">
                              {currentProduct.date_creation ? new Date(currentProduct.date_creation).toLocaleDateString('fr-FR') : 'Inconnue'}
                           </p>
                        </div>
@@ -765,128 +665,123 @@ export default function App() {
 
   const renderNotFoundOverlay = () => {
     return (
-      <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.2)] z-[60] animate-in slide-in-from-bottom-full duration-300 p-6 pb-8 max-md:pb-32 border-t-4 border-orange-500">
-         <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto -mt-2 mb-6"></div>
+      <div className="absolute bottom-16 md:bottom-0 left-0 right-0 bg-white rounded-t-[2rem] shadow-[0_-15px_50px_rgba(0,0,0,0.15)] z-[60] animate-in slide-in-from-bottom-full duration-300 p-5 md:p-6 pb-6 md:pb-8 border-t-4 border-orange-500">
+         <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto -mt-2 mb-5"></div>
          <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-4">
-               <div className="w-14 h-14 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center shrink-0 shadow-sm">
-                  <AlertCircle size={32} />
+               <div className="w-12 h-12 md:w-14 md:h-14 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center shrink-0 shadow-sm">
+                  <AlertCircle size={28} />
                </div>
                <div>
-                  <h3 className="text-2xl font-extrabold text-slate-800 leading-tight">Introuvable</h3>
-                  <p className="text-sm font-mono font-bold text-slate-500 mt-1">{scannedCode}</p>
+                  <h3 className="text-xl md:text-2xl font-extrabold text-slate-800 leading-tight">Introuvable</h3>
+                  <p className="text-xs md:text-sm font-mono font-bold text-slate-500 mt-0.5">{scannedCode}</p>
                </div>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-3 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition">
-               <X size={24} />
+            <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2.5 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition">
+               <X size={20} />
             </button>
          </div>
-         <button onClick={() => setViewState('take-photo')} className="w-full py-4 mt-2 bg-blue-600 rounded-2xl text-white text-lg font-bold flex items-center justify-center gap-3 hover:bg-blue-700 transition shadow-lg shadow-blue-500/30">
-            <Camera size={24} /> Créer la fiche produit
+         <button onClick={() => setViewState('take-photo')} className="w-full py-3.5 md:py-4 mt-2 bg-blue-600 rounded-2xl text-white text-md md:text-lg font-bold flex items-center justify-center gap-3 hover:bg-blue-700 transition shadow-lg shadow-blue-500/30 active:scale-95">
+            <Camera size={22} /> Créer la fiche produit
          </button>
       </div>
     );
   };
 
   const renderManualEntry = () => (
-    <div className="absolute inset-0 bg-slate-50 flex flex-col p-8 animate-in fade-in duration-200 z-[60]">
-      <button onClick={() => setViewState('camera')} className="w-fit p-4 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 mb-8 hover:bg-slate-100 transition"><ArrowLeft size={28} /></button>
+    <div className="absolute inset-0 bg-slate-50 flex flex-col p-6 md:p-8 animate-in fade-in duration-200 z-[100]">
+      <button onClick={() => setViewState('camera')} className="w-fit p-3 md:p-4 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 mb-6 hover:bg-slate-100 transition active:scale-95"><ArrowLeft size={24} /></button>
       <div className="max-w-xl mx-auto w-full flex-1 flex flex-col justify-center">
-        <h2 className="text-4xl font-extrabold text-slate-800 mb-3">Saisie manuelle</h2>
-        <div className="bg-white p-3 rounded-2xl shadow-sm border-2 border-slate-200 flex items-center mb-8">
-          <input type="text" autoFocus className="flex-1 bg-transparent border-none text-3xl p-4 outline-none font-mono text-slate-800 uppercase rounded-xl" placeholder="Ex: 316514..." value={manualCode} onChange={(e) => setManualCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch(manualCode)} />
+        <h2 className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-3">Saisie manuelle</h2>
+        <div className="bg-white p-2 md:p-3 rounded-2xl shadow-sm border-2 border-slate-200 flex items-center mb-6">
+          <input type="text" autoFocus className="flex-1 bg-transparent border-none text-2xl md:text-3xl p-3 md:p-4 outline-none font-mono text-slate-800 uppercase rounded-xl w-full" placeholder="Ex: 316514..." value={manualCode} onChange={(e) => setManualCode(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch(manualCode)} />
         </div>
-        <button onClick={() => handleSearch(manualCode)} disabled={!manualCode} className="w-full py-6 rounded-2xl bg-blue-600 text-white text-2xl font-bold shadow-lg shadow-blue-500/30 disabled:opacity-50">Rechercher l'article</button>
+        <button onClick={() => handleSearch(manualCode)} disabled={!manualCode} className="w-full py-4 md:py-6 rounded-2xl bg-blue-600 text-white text-xl md:text-2xl font-bold shadow-lg shadow-blue-500/30 disabled:opacity-50 active:scale-95 transition-transform">Rechercher l'article</button>
       </div>
     </div>
   );
 
-  // Écran "Appareil photo" superposé sur la vidéo principale
   const renderTakePhotoUI = () => (
-    <div className="absolute inset-0 z-[60] flex flex-col animate-in fade-in duration-200">
-      <div className="absolute top-6 left-6 z-10">
-         <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg"><ArrowLeft size={28} /></button>
+    <div className="absolute inset-0 z-[100] flex flex-col animate-in fade-in duration-200">
+      <div className="absolute top-4 left-4 md:top-6 md:left-6 z-10">
+         <button onClick={() => setViewState('not-found')} className="p-3 md:p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg active:scale-95"><ArrowLeft size={24} /></button>
       </div>
       
-      {/* Zone centrale transparente pour laisser voir la vidéo en fond */}
+      {/* Zone de focus centrale */}
       <div className="flex-1 relative flex items-center justify-center pointer-events-none">
-        <div className="absolute inset-0 border-[15px] border-black/40"></div>
-        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center">
-          <span className="bg-black/50 text-white px-5 py-3 rounded-full backdrop-blur-sm text-sm font-bold shadow-lg">Cadrez la pièce</span>
+        <div className="absolute inset-0 border-[20px] md:border-[15px] border-black/50"></div>
+        <div className="absolute inset-x-8 top-[20%] bottom-[25%] md:inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
+          <span className="bg-black/60 text-white px-5 py-2.5 rounded-full backdrop-blur-sm text-sm font-bold shadow-lg">Cadrez la pièce</span>
         </div>
       </div>
       
-      <div className="h-48 bg-black/90 flex items-center justify-center pb-8 border-t border-white/10">
-        <button onClick={takePicture} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform bg-black hover:bg-white/10">
-          <div className="w-20 h-20 bg-white rounded-full"></div>
+      <div className="absolute bottom-0 left-0 right-0 h-40 md:h-48 bg-black flex items-center justify-center pb-6 md:pb-8 border-t border-white/10">
+        <button onClick={takePicture} className="w-20 h-20 md:w-24 md:h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform bg-black">
+          <div className="w-16 h-16 md:w-20 md:h-20 bg-white rounded-full"></div>
         </button>
       </div>
     </div>
   );
 
   const renderPhotoPreview = () => (
-    <div className="absolute inset-0 bg-slate-900 flex flex-col animate-in fade-in duration-200 z-[60]">
-       <div className="flex-1 relative p-8 flex flex-col justify-center">
-         <h3 className="text-white text-center text-3xl font-bold mb-8">Image Nette ?</h3>
-         <div className="w-full max-w-2xl mx-auto rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-700 bg-black">
+    <div className="absolute inset-0 bg-slate-900 flex flex-col animate-in fade-in duration-200 z-[100]">
+       <div className="flex-1 relative p-6 flex flex-col justify-center">
+         <h3 className="text-white text-center text-2xl md:text-3xl font-bold mb-6">Image Nette ?</h3>
+         <div className="w-full max-w-2xl mx-auto rounded-3xl overflow-hidden shadow-2xl border-2 md:border-4 border-slate-700 bg-black">
            <img src={capturedPhoto} alt="Aperçu" className="w-full h-auto object-contain max-h-[50vh] rounded-2xl" />
          </div>
        </div>
-       <div className="bg-slate-800 p-8 flex gap-6 pb-12 rounded-t-3xl">
-          <button onClick={() => setViewState('take-photo')} disabled={isUploading} className="flex-1 py-6 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-xl font-bold flex items-center justify-center gap-3 transition disabled:opacity-50">
-            <X size={28} /> Refaire
+       <div className="bg-slate-800 p-6 flex gap-4 md:gap-6 pb-10 rounded-t-3xl">
+          <button onClick={() => setViewState('take-photo')} disabled={isUploading} className="flex-1 py-4 md:py-6 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-lg md:text-xl font-bold flex items-center justify-center gap-2 transition disabled:opacity-50 active:scale-95">
+            <X size={24} /> Refaire
           </button>
-          <button onClick={saveNewArticle} disabled={isUploading} className="flex-1 py-6 rounded-2xl bg-green-500 hover:bg-green-400 text-white text-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-green-500/20 transition disabled:opacity-50">
-            {isUploading ? <span className="animate-pulse">Envoi...</span> : <><Check size={28} /> Valider</>}
+          <button onClick={saveNewArticle} disabled={isUploading} className="flex-1 py-4 md:py-6 rounded-2xl bg-green-500 hover:bg-green-400 text-white text-lg md:text-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-green-500/20 transition disabled:opacity-50 active:scale-95">
+            {isUploading ? <span className="animate-pulse">Envoi...</span> : <><Check size={24} /> Valider</>}
           </button>
        </div>
     </div>
   );
 
   const renderHistory = () => (
-    <div className="w-full h-full bg-slate-50 flex flex-col relative z-10">
-      <div className="bg-white p-6 shadow-sm sticky top-0 flex items-center justify-between border-b border-slate-100 shrink-0">
-        <div className="flex items-center gap-4">
-          <button onClick={() => setActiveTab('scan')} className="p-2 -ml-2 text-slate-600 md:hidden rounded-full hover:bg-slate-100"><ArrowLeft size={28}/></button>
-          <h2 className="text-3xl font-extrabold text-slate-800 flex items-center gap-3"><History className="text-blue-600" size={32} /> Historique</h2>
+    <div className="w-full h-full bg-slate-50 flex flex-col relative z-10 pb-16 md:pb-0">
+      <div className="bg-white p-5 md:p-6 shadow-sm sticky top-0 flex items-center justify-between border-b border-slate-100 shrink-0 z-20">
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-2"><History className="text-blue-600" size={28} /> Historique</h2>
         </div>
         {history.length > 0 && (
-          <button onClick={clearAllHistory} className="p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center justify-center shrink-0" title="Vider l'historique">
-            <Trash2 size={24} />
+          <button onClick={clearAllHistory} className="p-2 md:p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center justify-center shrink-0 active:bg-red-100" title="Vider l'historique">
+            <Trash2 size={22} />
           </button>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-3 md:space-y-4">
         {history.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-slate-400">
-            <Package size={80} className="mb-6 opacity-30" />
-            <p className="text-xl font-bold">Aucun article scanné</p>
+          <div className="flex flex-col items-center justify-center h-full text-slate-400 pb-20">
+            <Package size={64} className="mb-4 opacity-30" />
+            <p className="text-lg font-bold">Aucun article scanné</p>
           </div>
         ) : (
           history.map((item) => (
             <div key={item.code_barre} 
-                 onClick={() => handleHistoryItemClick(item)}
-                 onTouchStart={() => handleItemPressStart(item)}
-                 onTouchEnd={handleItemPressEnd}
-                 onTouchMove={handleItemPressEnd}
-                 onMouseDown={() => handleItemPressStart(item)}
-                 onMouseUp={handleItemPressEnd}
-                 onMouseLeave={handleItemPressEnd}
-                 className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6 cursor-pointer hover:shadow-md transition-all active:scale-[0.98] select-none">
-              <div className="w-20 h-20 bg-white border border-slate-100 rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
-                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
+                 onClick={() => { 
+                    setCurrentProduct(item); 
+                    setIsProductExpanded(true); 
+                    setViewState('product'); 
+                 }} 
+                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
+              <div className="w-16 h-16 md:w-20 md:h-20 bg-white border border-slate-100 rounded-xl md:rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
+                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
               </div>
-              <div className="flex-1 min-w-0 pointer-events-none">
-                <h4 className="text-xl font-bold text-slate-800 truncate mb-1 flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <h4 className="text-lg md:text-xl font-bold text-slate-800 truncate mb-0.5 flex items-center gap-2">
                   {item.designation || 'Article'}
-                  {/* Badge visible si l'article est en création */}
                   {item.statut === 'En attente' && (
-                    <span className="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-black bg-orange-100 text-orange-600 border border-orange-200 uppercase tracking-wider">
-                      En création
+                    <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-orange-100 text-orange-600 border border-orange-200 uppercase tracking-wider">
+                      Création
                     </span>
                   )}
                 </h4>
-                <p className="text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-2">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
+                <p className="text-sm md:text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-1.5">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
               </div>
             </div>
           ))
@@ -896,20 +791,20 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-screen w-full bg-slate-900 font-sans text-slate-900 overflow-hidden flex-col md:flex-row relative">
+    <div className="flex h-[100dvh] w-full bg-slate-900 font-sans text-slate-900 overflow-hidden flex-col md:flex-row relative">
       
-      {/* Notifications Toasts */}
+      {/* Notifications Toasts - Placés en haut pour ne pas être cachés par la Bottom Nav */}
       {toastMessage && (
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-6 py-4 rounded-2xl shadow-2xl z-[100] font-bold text-sm text-center">
+        <div className="absolute top-16 md:top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-5 py-3 md:px-6 md:py-4 rounded-2xl shadow-2xl z-[110] font-bold text-sm text-center border border-slate-700 animate-in slide-in-from-top-4">
            {toastMessage}
         </div>
       )}
 
-      {/* HEADER TOP (Mobile) */}
-      <div className="md:hidden w-full bg-white px-4 py-3 flex justify-between items-center z-50 shadow-sm rounded-b-3xl relative">
+      {/* HEADER TOP (Mobile) - Épuré et plat */}
+      <div className="md:hidden w-full bg-white/95 backdrop-blur-md px-4 py-3 flex justify-between items-center z-50 border-b border-slate-100 shadow-sm absolute top-0 left-0 right-0">
         <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-11 h-11 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-extrabold shrink-0 shadow-sm">
-            {profile?.prenom?.charAt(0) || <User size={20} />}
+          <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-extrabold shrink-0 shadow-sm text-sm">
+            {profile?.prenom?.charAt(0) || <User size={18} />}
           </div>
           <div className="flex flex-col min-w-0 pr-2">
              <span className="text-sm font-bold leading-tight truncate">{profile?.prenom} {profile?.nom}</span>
@@ -918,11 +813,11 @@ export default function App() {
                   {profile.magasins_autorises.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
              ) : (
-                <span className="text-xs text-slate-500 font-semibold flex items-center gap-1 truncate"><MapPin size={10} className="shrink-0"/> {selectedStore || 'Magasin N/A'}</span>
+                <span className="text-[10px] text-slate-500 font-semibold flex items-center gap-1 truncate uppercase tracking-wide"><MapPin size={10} className="shrink-0"/> {selectedStore || 'Magasin N/A'}</span>
              )}
           </div>
         </div>
-        <button onClick={handleLogout} className="p-3 text-slate-400 bg-slate-50 rounded-full hover:bg-red-50 hover:text-red-500 transition-colors shrink-0"><LogOut size={20} /></button>
+        <button onClick={handleLogout} className="p-2 text-slate-400 bg-slate-50 rounded-full hover:bg-red-50 hover:text-red-500 transition-colors shrink-0 active:scale-95"><LogOut size={18} /></button>
       </div>
 
       {/* SIDEBAR (Desktop) */}
@@ -945,7 +840,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Profil Utilisateur Sidebar */}
         <div className="bg-slate-50 p-4 rounded-3xl border border-slate-100 shadow-sm">
            <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3 overflow-hidden">
@@ -981,21 +875,22 @@ export default function App() {
         </div>
       </nav>
 
-      {/* BOTTOM NAV (Mobile) */}
-      <nav className="md:hidden fixed bottom-4 left-4 right-4 bg-white/90 backdrop-blur-xl border border-slate-100 flex justify-around items-center h-16 z-[80] rounded-3xl shadow-[0_10px_40px_rgba(0,0,0,0.1)]">
-        <button onClick={() => { setActiveTab('scan'); if(viewState !== 'camera') resetToScan(); }} className={`flex-1 flex flex-col items-center justify-center h-full transition-all ${activeTab === 'scan' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
-          <Camera size={26} strokeWidth={activeTab === 'scan' ? 2.5 : 2} className={activeTab === 'scan' ? '-translate-y-1 transition-transform' : 'transition-transform'} />
+      {/* BOTTOM NAV (Mobile) - Fixée au bas comme une App iOS/Android standard */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-200 flex justify-around items-center h-16 z-[70] pb-safe shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
+        <button onClick={() => { setActiveTab('scan'); if(viewState !== 'camera') resetToScan(); }} className={`flex-1 flex flex-col items-center justify-center h-full transition-colors ${activeTab === 'scan' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
+          <Camera size={24} strokeWidth={activeTab === 'scan' ? 2.5 : 2} className={activeTab === 'scan' ? '-translate-y-0.5 transition-transform' : 'transition-transform'} />
+          <span className="text-[10px] font-bold mt-1">Scan</span>
         </button>
-        <div className="w-px h-8 bg-slate-200"></div>
-        <button onClick={() => setActiveTab('history')} className={`flex-1 flex flex-col items-center justify-center h-full transition-all ${activeTab === 'history' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
-          <History size={26} strokeWidth={activeTab === 'history' ? 2.5 : 2} className={activeTab === 'history' ? '-translate-y-1 transition-transform' : 'transition-transform'} />
+        <button onClick={() => setActiveTab('history')} className={`flex-1 flex flex-col items-center justify-center h-full transition-colors ${activeTab === 'history' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
+          <History size={24} strokeWidth={activeTab === 'history' ? 2.5 : 2} className={activeTab === 'history' ? '-translate-y-0.5 transition-transform' : 'transition-transform'} />
+          <span className="text-[10px] font-bold mt-1">Historique</span>
         </button>
       </nav>
 
       {/* MAIN AREA */}
-      <main className="flex-1 relative overflow-hidden bg-slate-900 h-full">
+      <main className="flex-1 relative overflow-hidden bg-slate-900 h-full pt-[64px] md:pt-0">
         
-        <div className={`w-full h-full max-md:pb-24 ${activeTab === 'history' ? 'block' : 'hidden'} bg-slate-50`}>
+        <div className={`w-full h-full ${activeTab === 'history' ? 'block' : 'hidden'} bg-slate-50`}>
            {renderHistory()}
         </div>
         
@@ -1007,16 +902,15 @@ export default function App() {
            {viewState === 'take-photo' && renderTakePhotoUI()}
            {viewState === 'photo-preview' && renderPhotoPreview()}
            {viewState === 'manual-entry' && renderManualEntry()}
+           {viewState === 'product' && renderProductOverlay()}
+           {viewState === 'not-found' && renderNotFoundOverlay()}
         </div>
-
-        {/* OVERLAYS GLOBAUX */}
-        {viewState === 'product' && renderProductOverlay()}
-        {viewState === 'not-found' && renderNotFoundOverlay()}
 
       </main>
 
       <style dangerouslySetInnerHTML={{__html: `
         @keyframes scanline { 0% { transform: translateY(-120px); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(120px); opacity: 0; } }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
       `}} />
     </div>
   );
