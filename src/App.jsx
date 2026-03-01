@@ -18,7 +18,6 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   
-  // Notification in-app
   const [toastMessage, setToastMessage] = useState(null);
 
   const [activeTab, setActiveTab] = useState('scan');
@@ -27,7 +26,6 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
-  // États pour le tiroir et les interactions tactiles
   const [isProductExpanded, setIsProductExpanded] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
@@ -41,7 +39,6 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Références pour gérer l'appui long (suppression historique)
   const longPressTimer = useRef(null);
   const isLongPress = useRef(false);
 
@@ -73,31 +70,32 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // --- NOUVEAU : FETCH HISTORIQUE DEPUIS SUPABASE ---
+  // --- FETCH HISTORIQUE DEPUIS SUPABASE (Simplifié) ---
   const fetchHistory = async (userId) => {
     if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('historique_scans')
-        .select('*')
+        .select('code_barre, details')
         .eq('user_id', userId)
-        .not('details', 'is', null) // On ne récupère que ceux qui ont les infos JSON
         .order('created_at', { ascending: false })
         .limit(50);
         
       if (error) throw error;
       
-      // Déduplication locale pour la sécurité de l'affichage
       const uniqueHistory = [];
       const codes = new Set();
+      
       if (data) {
          data.forEach(row => {
-           if (!codes.has(row.code_barre) && row.details) {
+           // Grâce au type JSONB, 'row.details' est déjà un objet JavaScript propre !
+           if (row.details && !codes.has(row.code_barre)) {
              codes.add(row.code_barre);
              uniqueHistory.push(row.details);
            }
          });
       }
+      
       setHistory(uniqueHistory);
     } catch (e) {
       console.error("Erreur fetch historique:", e);
@@ -107,7 +105,6 @@ export default function App() {
   // --- 1. GESTION DE L'AUTHENTIFICATION ---
   useEffect(() => {
     if (!supabase) {
-       // Mode test offline : on utilise le cache du navigateur
        const savedHistory = localStorage.getItem('techscan_history');
        if (savedHistory) setHistory(JSON.parse(savedHistory));
        return;
@@ -116,17 +113,17 @@ export default function App() {
       setSession(session);
       if (session) {
         fetchProfile(session.user.id);
-        fetchHistory(session.user.id); // Récupère l'historique cloud au lancement
+        fetchHistory(session.user.id);
       }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (session) {
         fetchProfile(session.user.id);
-        fetchHistory(session.user.id); // Récupère l'historique cloud à la connexion
+        fetchHistory(session.user.id);
       } else {
         setProfile(null);
-        setHistory([]); // Vide l'écran si on se déconnecte
+        setHistory([]);
       }
     });
     return () => subscription.unsubscribe();
@@ -196,26 +193,25 @@ export default function App() {
 
       let finalProduct = product;
 
-      // 2. RECHERCHE DANS LA FILE D'ATTENTE SI INCONNU (Vérification pour toutes les tablettes)
+      // 2. RECHERCHE DANS LA FILE D'ATTENTE SI INCONNU
       if (!finalProduct) {
         const { data: pendingData, error: pendingError } = await supabase
           .from('articles_a_creer')
           .select('*')
           .eq('code_barre', code)
-          .limit(1); // Prend la première demande trouvée pour ce code
+          .limit(1);
 
         if (pendingError) throw pendingError;
 
         if (pendingData && pendingData.length > 0) {
           const pendingProduct = pendingData[0];
-          // On construit un "faux" article pour l'affichage visuel basé sur la demande
           finalProduct = {
             code_barre: pendingProduct.code_barre,
             photo: pendingProduct.photo_url,
             designation: 'En cours de création',
             marque: 'Validation en attente',
             reference_fabricant: 'N/A',
-            statut: 'En attente', // Ce statut déclenche l'affichage du badge orange
+            statut: 'En attente',
             date_creation: pendingProduct.created_at || new Date().toISOString()
           };
         }
@@ -224,7 +220,6 @@ export default function App() {
       setIsScanning(false);
       stateRef.current.isScanning = false;
 
-      // AFFICHAGE DU RÉSULTAT
       if (finalProduct) {
         setCurrentProduct(finalProduct);
         setIsProductExpanded(false); 
@@ -241,7 +236,7 @@ export default function App() {
   };
 
   const addToHistory = async (product) => {
-    // Mise à jour immédiate de l'interface (Optimistic UI) sans attendre la BDD
+    // 1. Mise à jour immédiate de l'interface
     setHistory(prevHistory => {
       const newEntry = { ...product, scanDate: new Date().toISOString() };
       const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
@@ -249,12 +244,10 @@ export default function App() {
       return newHistory;
     });
 
+    // 2. Sauvegarde en arrière-plan sur Supabase
     if (!supabase || !session) return;
     try {
-      // 1. Supprime l'ancienne occurrence pour cet utilisateur pour éviter les doublons
       await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: product.code_barre });
-      
-      // 2. Insère la nouvelle occurrence avec le bloc 'details' en JSON
       await supabase.from('historique_scans').insert([{
         user_id: session.user.id,
         magasin: selectedStore || 'Inconnu',
@@ -272,7 +265,6 @@ export default function App() {
       setHistory([]);
       if (!supabase) localStorage.removeItem('techscan_history');
       
-      // Vider la base de données ne supprime que SON historique
       if (supabase && session) {
         try {
           await supabase.from('historique_scans').delete().eq('user_id', session.user.id);
@@ -290,7 +282,6 @@ export default function App() {
       return newHistory;
     });
 
-    // Supprimer un article de l'historique ne touchera pas la table 'articles_a_creer'
     if (supabase && session) {
       try {
         await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: codeBarre });
@@ -372,7 +363,6 @@ export default function App() {
     const startScanner = async () => {
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
-          // DEMANDE DE HAUTE RÉSOLUTION (HD/4K selon la capacité de l'appareil)
           stream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
               facingMode: 'environment',
@@ -425,13 +415,11 @@ export default function App() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
       
-      // On utilise la vraie résolution native de la vidéo pour la photo
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      // QUALITÉ D'IMAGE PREMIUM : Export JPEG à 95% (0.95) de qualité pour ne pas perdre les détails
       setCapturedPhoto(canvas.toDataURL('image/jpeg', 0.95));
       setViewState('photo-preview');
     }
@@ -470,7 +458,6 @@ export default function App() {
       }]);
       if (dbError) throw dbError;
       
-      // Ajout de l'article avec le statut "En attente" dans l'historique local pour un retour visuel immédiat
       const pendingArticle = {
         code_barre: scannedCode,
         photo: publicUrlData.publicUrl,
@@ -638,7 +625,6 @@ export default function App() {
                  <X size={24} />
                </button>
                <div className="flex items-center gap-1.5">
-                 {/* Badge dynamique : vert si Actif, orange si "En attente" */}
                  <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut === 'En attente' ? 'bg-orange-500 shadow-sm animate-pulse' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
                </div>
             </div>
