@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown } from 'lucide-react';
+import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown, Eye, EyeOff } from 'lucide-react';
+
+// --- CONFIGURATION SUPABASE ---
+// ⚠️ Décommentez les lignes suivantes pour activer la vraie base de données Supabase.
 
 import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -13,6 +16,7 @@ export default function App() {
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -26,8 +30,10 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
-  // État pour gérer le "tiroir" (Bottom Sheet) façon Yuka
+  // États pour le "tiroir" (Bottom Sheet) et le tactile (Swipe)
   const [isProductExpanded, setIsProductExpanded] = useState(false);
+  const [touchStart, setTouchStart] = useState(null);
+  const [touchEnd, setTouchEnd] = useState(null);
 
   const [history, setHistory] = useState([]);
   const [flashOn, setFlashOn] = useState(false);
@@ -168,14 +174,56 @@ export default function App() {
     localStorage.setItem('techscan_history', JSON.stringify(newHistory));
   };
 
-  // Moteur Camera Scan Natif (Optimisé pour scanner en fond sous les tiroirs Yuka)
+  // FERMETURE AUTOMATIQUE (5 secondes)
+  useEffect(() => {
+    let timeoutId;
+    if (viewState === 'product' && !isProductExpanded) {
+      timeoutId = setTimeout(() => {
+        resetToScan();
+      }, 5000);
+    }
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [viewState, isProductExpanded]);
+
+  // GESTION DES SWIPES (Tactile)
+  const handleTouchStart = (e) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientY);
+  };
+  const handleTouchMove = (e) => {
+    setTouchEnd(e.targetTouches[0].clientY);
+  };
+  const handleTouchEnd = () => {
+    if (!touchStart || !touchEnd) return;
+    const distance = touchStart - touchEnd;
+    
+    // Swipe vers le haut (distance positive)
+    if (distance > 50 && !isProductExpanded) {
+      setIsProductExpanded(true);
+    }
+    // Swipe vers le bas (distance négative)
+    if (distance < -50 && !isProductExpanded) {
+      resetToScan();
+    }
+    if (distance < -50 && isProductExpanded) {
+      setIsProductExpanded(false);
+    }
+    
+    // Reset
+    setTouchStart(null);
+    setTouchEnd(null);
+  };
+
+  // Moteur Camera Scan Natif
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
 
     const startScanner = async () => {
-      // La caméra reste active même en affichant un produit ou une erreur "not-found"
-      if (session && activeTab === 'scan' && (viewState === 'camera' || viewState === 'product' || viewState === 'not-found') && videoRef.current && navigator.mediaDevices) {
+      // La caméra reste active tout le temps dans l'onglet scan, même pour "take-photo" (en fond)
+      if (session && activeTab === 'scan' && (viewState === 'camera' || viewState === 'product' || viewState === 'not-found' || viewState === 'take-photo') && videoRef.current && navigator.mediaDevices) {
         try {
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
           if (videoRef.current) {
@@ -185,7 +233,7 @@ export default function App() {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
                 
-                // On scanne uniquement si on n'est pas en train de charger, et que la fiche PLEIN ÉCRAN n'est pas ouverte
+                // On scanne uniquement si on n'est pas en train d'interagir avec les fiches produit ou formulaires
                 if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product' || stateRef.current.viewState === 'not-found') 
                     && !stateRef.current.isScanning 
                     && !stateRef.current.isProductExpanded 
@@ -311,7 +359,17 @@ export default function App() {
               <label className="text-slate-300 text-sm font-bold mb-2 block">Mot de passe</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500"><Lock size={20} /></div>
-                <input type="password" required className="w-full bg-slate-900 border border-slate-700 text-white rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:border-blue-500 transition-colors" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+                <input 
+                  type={showPassword ? "text" : "password"} 
+                  required 
+                  className="w-full bg-slate-900 border border-slate-700 text-white rounded-2xl py-4 pl-12 pr-12 focus:outline-none focus:border-blue-500 transition-colors" 
+                  placeholder="••••••••" 
+                  value={password} 
+                  onChange={(e) => setPassword(e.target.value)} 
+                />
+                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-500 hover:text-slate-300 transition-colors">
+                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                </button>
               </div>
             </div>
             <div className="flex items-center gap-3 pt-2">
@@ -378,11 +436,14 @@ export default function App() {
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
-      // 1. MODE COMPACT (Tiroir Yuka arrondi)
+      // 1. MODE COMPACT (Tiroir Yuka arrondi avec gestes Swipe)
       return (
         <div 
           className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.2)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-8 max-md:pb-32"
           onClick={() => setIsProductExpanded(true)}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         >
           <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mt-4 mb-2"></div>
           
@@ -398,9 +459,14 @@ export default function App() {
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
             
-            <div className="flex flex-col items-center justify-center shrink-0 ml-2">
-               <div className={`w-4 h-4 rounded-full mb-1 ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
-               <span className="text-[10px] font-bold text-slate-500 uppercase">{currentProduct.statut || 'Info'}</span>
+            {/* Bouton pour fermer et statut */}
+            <div className="flex flex-col items-end shrink-0 ml-2 gap-3">
+               <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition">
+                 <X size={24} />
+               </button>
+               <div className="flex items-center gap-1.5">
+                 <div className={`w-3 h-3 rounded-full ${currentProduct.statut === 'Actif' ? 'bg-green-500 shadow-sm' : currentProduct.statut ? 'bg-orange-500 shadow-sm' : 'bg-slate-300'}`}></div>
+               </div>
             </div>
           </div>
         </div>
@@ -409,7 +475,12 @@ export default function App() {
 
     // 2. MODE PLEIN ÉCRAN (Pas de bords arrondis sur le conteneur principal, mais arrondi à l'intérieur)
     return (
-      <div className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0">
+      <div 
+        className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
         
         {/* Header flush contre les bords */}
         <div className="relative h-72 bg-white flex justify-center items-center shadow-sm p-8 pt-16 border-b border-slate-200">
@@ -542,24 +613,28 @@ export default function App() {
     </div>
   );
 
+  // L'écran de prise de photo devient un simple overlay au-dessus de la caméra principale (pas de redémarrage vidéo)
   const renderTakePhoto = () => (
-    <div className="relative w-full h-full bg-black flex flex-col animate-in zoom-in-95 duration-200 z-[60]">
-      <div className="absolute top-6 left-6 z-10">
-         <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition"><ArrowLeft size={28} /></button>
+    <div className="absolute inset-0 z-[60] flex flex-col pointer-events-none animate-in fade-in duration-200">
+      <div className="absolute top-6 left-6 z-10 pointer-events-auto">
+         <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg"><ArrowLeft size={28} /></button>
       </div>
-      <div className="flex-1 relative overflow-hidden flex items-center justify-center">
-        <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
-        <canvas ref={canvasRef} className="hidden" />
-        <div className="absolute inset-0 border-[15px] border-black/40 pointer-events-none"></div>
-        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl pointer-events-none flex items-center justify-center">
-          <span className="bg-black/50 text-white px-5 py-3 rounded-full backdrop-blur-sm text-sm font-bold">Cadrez la pièce</span>
+      
+      <div className="flex-1 relative flex items-center justify-center">
+        {/* Le flux vidéo principal reste derrière, ici on n'affiche que les guides */}
+        <div className="absolute inset-0 border-[15px] border-black/40"></div>
+        <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center pointer-events-auto">
+          <span className="bg-black/50 text-white px-5 py-3 rounded-full backdrop-blur-sm text-sm font-bold shadow-lg">Cadrez la pièce</span>
         </div>
       </div>
-      <div className="h-48 bg-black flex items-center justify-center pb-8 border-t border-white/10">
+      
+      <div className="h-48 bg-black/90 flex items-center justify-center pb-8 border-t border-white/10 pointer-events-auto">
         <button onClick={takePicture} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform bg-black hover:bg-white/10">
           <div className="w-20 h-20 bg-white rounded-full"></div>
         </button>
       </div>
+      
+      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 
@@ -721,8 +796,8 @@ export default function App() {
         </div>
         
         <div className={`w-full h-full ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
-          {/* La caméra tourne en fond dans l'onglet scan */}
-          {(viewState === 'camera' || viewState === 'product' || viewState === 'not-found') && renderCameraView()}
+          {/* La caméra tourne en fond dans l'onglet scan, sauf si on est en photo-preview */}
+          {(viewState === 'camera' || viewState === 'product' || viewState === 'not-found' || viewState === 'take-photo') && renderCameraView()}
           {viewState === 'manual-entry' && renderManualEntry()}
           {viewState === 'take-photo' && renderTakePhoto()}
           {viewState === 'photo-preview' && renderPhotoPreview()}
