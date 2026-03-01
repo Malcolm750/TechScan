@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown, Eye, EyeOff } from 'lucide-react';
-
+import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown, Eye, EyeOff, Trash2 } from 'lucide-react';
 
 import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -19,7 +18,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   
-  // Notification in-app pour remplacer les alert()
+  // Notification in-app
   const [toastMessage, setToastMessage] = useState(null);
 
   const [activeTab, setActiveTab] = useState('scan');
@@ -28,7 +27,7 @@ export default function App() {
   const [manualCode, setManualCode] = useState('');
   const [currentProduct, setCurrentProduct] = useState(null);
   
-  // États pour le "tiroir" (Bottom Sheet) et le tactile (Swipe)
+  // États pour le tiroir et les interactions tactiles
   const [isProductExpanded, setIsProductExpanded] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
@@ -42,17 +41,17 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // --- NOUVEAU : VERROUILLAGE DE L'ORIENTATION EN PAYSAGE ---
+  // Références pour gérer l'appui long (suppression historique)
+  const longPressTimer = useRef(null);
+  const isLongPress = useRef(false);
+
+  // --- VERROUILLAGE DE L'ORIENTATION EN PAYSAGE ---
   useEffect(() => {
     const lockOrientation = async () => {
-      // On vérifie si le navigateur de la tablette autorise le verrouillage
       if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
         try {
-          // On demande le mode paysage (landscape)
           await window.screen.orientation.lock('landscape');
-          console.log("Orientation verrouillée en mode paysage");
         } catch (error) {
-          // Le verrouillage échoue souvent si l'app n'est pas en plein écran ou pas installée
           console.log("Impossible de verrouiller l'orientation :", error);
         }
       }
@@ -60,7 +59,7 @@ export default function App() {
     lockOrientation();
   }, []);
 
-  // --- RÉFÉRENCES POUR LA CAMÉRA (Évite les bugs de boucle) ---
+  // --- RÉFÉRENCES POUR LA CAMÉRA ---
   const stateRef = useRef({ viewState, isScanning, scannedCode: '', lastScanTime: 0, isProductExpanded: false });
   useEffect(() => {
     stateRef.current.viewState = viewState;
@@ -134,7 +133,6 @@ export default function App() {
     setIsScanning(true);
     setScannedCode(code);
     
-    // Mise à jour immédiate de la réf pour bloquer les scans multiples inutiles
     stateRef.current.isScanning = true;
     stateRef.current.scannedCode = code;
     stateRef.current.lastScanTime = Date.now();
@@ -170,9 +168,9 @@ export default function App() {
 
       if (product) {
         setCurrentProduct(product);
-        setIsProductExpanded(false); // Affiche la carte compacte en bas (Tiroir)
+        setIsProductExpanded(false); 
         setViewState('product');
-        addToHistory(product);
+        addToHistory(product); // Appel corrigé pour gérer plusieurs scans
       } else {
         setViewState('not-found');
       }
@@ -183,12 +181,60 @@ export default function App() {
     }
   };
 
+  // NOUVEAU: Gestion robuste de l'historique
   const addToHistory = (product) => {
-    const newEntry = { ...product, scanDate: new Date().toISOString() };
-    const newHistory = [newEntry, ...history.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
-    setHistory(newHistory);
-    localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+    setHistory(prevHistory => {
+      const newEntry = { ...product, scanDate: new Date().toISOString() };
+      // Retire l'ancienne occurrence et ajoute le nouveau scan en haut
+      const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
+      localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      return newHistory;
+    });
   };
+
+  const clearAllHistory = () => {
+    if (window.confirm("Voulez-vous vraiment vider tout l'historique ?")) {
+      setHistory([]);
+      localStorage.removeItem('techscan_history');
+    }
+  };
+
+  const deleteFromHistory = (codeBarre) => {
+    setHistory(prevHistory => {
+      const newHistory = prevHistory.filter(h => h.code_barre !== codeBarre);
+      localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      return newHistory;
+    });
+  };
+
+  // NOUVEAU: Appui long sur historique
+  const handleItemPressStart = (item) => {
+    isLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      isLongPress.current = true;
+      // Vibration si supportée
+      if (navigator.vibrate) navigator.vibrate(50);
+      if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique ?`)) {
+        deleteFromHistory(item.code_barre);
+      }
+    }, 700); // Déclenchement après 700ms
+  };
+
+  const handleItemPressEnd = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+    }
+  };
+
+  const handleHistoryItemClick = (item) => {
+    // Si l'utilisateur a fait un appui long, on ignore le clic simple
+    if (isLongPress.current) return; 
+    
+    setCurrentProduct(item);
+    setIsProductExpanded(true); // Ouvre directement en plein écran
+    setViewState('product'); 
+  };
+
 
   // FERMETURE AUTOMATIQUE (5 secondes)
   useEffect(() => {
@@ -215,30 +261,26 @@ export default function App() {
     if (!touchStart || !touchEnd) return;
     const distance = touchStart - touchEnd;
     
-    // Swipe vers le haut (distance positive)
     if (distance > 50 && !isProductExpanded) {
-      setIsProductExpanded(true);
+      setIsProductExpanded(true); // Glisser haut = plein écran
     }
-    // Swipe vers le bas (distance négative)
     if (distance < -50 && !isProductExpanded) {
-      resetToScan();
+      resetToScan(); // Glisser bas = fermer tiroir
     }
     if (distance < -50 && isProductExpanded) {
-      setIsProductExpanded(false);
+      setIsProductExpanded(false); // Glisser bas plein écran = réduire
     }
     
-    // Reset
     setTouchStart(null);
     setTouchEnd(null);
   };
 
-  // Moteur Camera Scan Natif : LA CAMÉRA NE S'ÉTEINT PLUS
+  // Moteur Camera Scan Natif
   useEffect(() => {
     let stream = null;
     let scanInterval = null;
 
     const startScanner = async () => {
-      // Tant qu'on est sur l'onglet "scan", la caméra tourne. (Sauf si on est déco)
       if (session && activeTab === 'scan' && videoRef.current && navigator.mediaDevices) {
         try {
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -249,7 +291,6 @@ export default function App() {
               const barcodeDetector = new window.BarcodeDetector();
               scanInterval = setInterval(async () => {
                 
-                // On scanne uniquement si on n'est pas en train d'interagir avec l'UI
                 if ((stateRef.current.viewState === 'camera' || stateRef.current.viewState === 'product' || stateRef.current.viewState === 'not-found') 
                     && !stateRef.current.isScanning 
                     && !stateRef.current.isProductExpanded 
@@ -260,8 +301,6 @@ export default function App() {
                       const code = barcodes[0].rawValue;
                       const now = Date.now();
                       
-                      // 1. Nouveau code : recherche immédiate
-                      // 2. Ancien code : on attend 2.5 secondes
                       if (code !== stateRef.current.scannedCode || (now - stateRef.current.lastScanTime > 2500)) {
                          handleSearch(code);
                       }
@@ -284,7 +323,6 @@ export default function App() {
       if (stream) stream.getTracks().forEach(track => track.stop());
     };
   }, [activeTab, session]); 
-  // Remarque : viewState a été retiré des dépendances. La caméra ne sera plus détruite !
 
   const takePicture = () => {
     if (videoRef.current && canvasRef.current) {
@@ -328,7 +366,7 @@ export default function App() {
 
   const resetToScan = () => {
     setViewState('camera');
-    setScannedCode(''); // Vider le code permet un rescan immédiat sans attendre 2.5s
+    setScannedCode(''); 
     setManualCode('');
     setCurrentProduct(null);
     setCapturedPhoto(null);
@@ -405,7 +443,6 @@ export default function App() {
 
   const renderScannerUI = () => (
     <>
-      {/* Cadre de visée avec coins arrondis doux */}
       {(!isProductExpanded) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="w-3/4 max-w-md aspect-video relative rounded-2xl shadow-[inset_0_0_0_2px_rgba(255,255,255,0.2)]">
@@ -425,7 +462,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Boutons d'action visibles uniquement si l'écran est dégagé */}
       {viewState === 'camera' && (
         <>
           <div className="absolute top-6 right-6 flex gap-4 z-20">
@@ -448,7 +484,6 @@ export default function App() {
     const displayImage = currentProduct.image_reference || currentProduct.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=600';
 
     if (!isProductExpanded) {
-      // 1. MODE COMPACT (Tiroir Yuka arrondi avec gestes Swipe)
       return (
         <div 
           className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.2)] z-[60] animate-in slide-in-from-bottom-full duration-300 cursor-pointer overflow-hidden pb-8 max-md:pb-32"
@@ -470,7 +505,6 @@ export default function App() {
                <p className="text-xs font-mono font-bold text-slate-400 mt-1">{currentProduct.code_barre}</p>
             </div>
             
-            {/* Bouton pour fermer manuellement et statut */}
             <div className="flex flex-col items-end shrink-0 ml-2 gap-3">
                <button onClick={(e) => { e.stopPropagation(); resetToScan(); }} className="p-2 bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition">
                  <X size={24} />
@@ -484,7 +518,6 @@ export default function App() {
       );
     }
 
-    // 2. MODE PLEIN ÉCRAN
     return (
       <div 
         className="absolute inset-0 bg-slate-50 z-[70] overflow-y-auto animate-in slide-in-from-bottom-10 duration-300 pb-24 md:pb-0"
@@ -621,14 +654,12 @@ export default function App() {
     </div>
   );
 
-  // Écran "Appareil photo" superposé sur la vidéo principale
   const renderTakePhotoUI = () => (
     <div className="absolute inset-0 z-[60] flex flex-col animate-in fade-in duration-200">
       <div className="absolute top-6 left-6 z-10">
          <button onClick={() => setViewState('not-found')} className="p-4 rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-black/70 transition shadow-lg"><ArrowLeft size={28} /></button>
       </div>
       
-      {/* Zone centrale transparente pour laisser voir la vidéo en fond */}
       <div className="flex-1 relative flex items-center justify-center pointer-events-none">
         <div className="absolute inset-0 border-[15px] border-black/40"></div>
         <div className="absolute inset-10 border-2 border-dashed border-white/50 rounded-3xl flex items-center justify-center">
@@ -665,9 +696,16 @@ export default function App() {
 
   const renderHistory = () => (
     <div className="w-full h-full bg-slate-50 flex flex-col relative z-10">
-      <div className="bg-white p-6 shadow-sm sticky top-0 flex items-center gap-4 border-b border-slate-100 shrink-0">
-        <button onClick={() => setActiveTab('scan')} className="p-2 -ml-2 text-slate-600 md:hidden rounded-full hover:bg-slate-100"><ArrowLeft size={28}/></button>
-        <h2 className="text-3xl font-extrabold text-slate-800 flex items-center gap-3"><History className="text-blue-600" size={32} /> Historique</h2>
+      <div className="bg-white p-6 shadow-sm sticky top-0 flex items-center justify-between border-b border-slate-100 shrink-0">
+        <div className="flex items-center gap-4">
+          <button onClick={() => setActiveTab('scan')} className="p-2 -ml-2 text-slate-600 md:hidden rounded-full hover:bg-slate-100"><ArrowLeft size={28}/></button>
+          <h2 className="text-3xl font-extrabold text-slate-800 flex items-center gap-3"><History className="text-blue-600" size={32} /> Historique</h2>
+        </div>
+        {history.length > 0 && (
+          <button onClick={clearAllHistory} className="p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center justify-center shrink-0" title="Vider l'historique">
+            <Trash2 size={24} />
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-4">
         {history.length === 0 ? (
@@ -678,16 +716,18 @@ export default function App() {
         ) : (
           history.map((item) => (
             <div key={item.code_barre} 
-                 onClick={() => { 
-                    setCurrentProduct(item); 
-                    setIsProductExpanded(true); // Ouvre en plein écran
-                    setViewState('product'); 
-                 }} 
-                 className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
+                 onClick={() => handleHistoryItemClick(item)}
+                 onTouchStart={() => handleItemPressStart(item)}
+                 onTouchEnd={handleItemPressEnd}
+                 onTouchMove={handleItemPressEnd}
+                 onMouseDown={() => handleItemPressStart(item)}
+                 onMouseUp={handleItemPressEnd}
+                 onMouseLeave={handleItemPressEnd}
+                 className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6 cursor-pointer hover:shadow-md transition-all active:scale-[0.98] select-none">
               <div className="w-20 h-20 bg-white border border-slate-100 rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm">
                  <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-xl" />
               </div>
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 pointer-events-none">
                 <h4 className="text-xl font-bold text-slate-800 truncate mb-1">{item.designation || 'Article'}</h4>
                 <p className="text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-2">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
               </div>
@@ -701,14 +741,14 @@ export default function App() {
   return (
     <div className="flex h-screen w-full bg-slate-900 font-sans text-slate-900 overflow-hidden flex-col md:flex-row relative">
       
-      {/* Notifications Toasts avec jolis arrondis */}
+      {/* Notifications Toasts */}
       {toastMessage && (
         <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-6 py-4 rounded-2xl shadow-2xl z-[100] font-bold text-sm text-center">
            {toastMessage}
         </div>
       )}
 
-      {/* HEADER TOP (Mobile) - Bords adoucis pour encadrer l'app */}
+      {/* HEADER TOP (Mobile) */}
       <div className="md:hidden w-full bg-white px-4 py-3 flex justify-between items-center z-50 shadow-sm rounded-b-3xl relative">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="w-11 h-11 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-extrabold shrink-0 shadow-sm">
@@ -728,7 +768,7 @@ export default function App() {
         <button onClick={handleLogout} className="p-3 text-slate-400 bg-slate-50 rounded-full hover:bg-red-50 hover:text-red-500 transition-colors shrink-0"><LogOut size={20} /></button>
       </div>
 
-      {/* SIDEBAR (Desktop) - Intégration soignée du profil en bas */}
+      {/* SIDEBAR (Desktop) */}
       <nav className="hidden md:flex flex-col w-72 h-full bg-white border-r border-slate-200 z-50 justify-between p-5 shadow-sm relative">
         <div>
           <div className="flex items-center gap-4 px-2 mb-10 mt-2">
@@ -784,7 +824,7 @@ export default function App() {
         </div>
       </nav>
 
-      {/* BOTTOM NAV (Mobile) - Façon "Îlot" très moderne */}
+      {/* BOTTOM NAV (Mobile) */}
       <nav className="md:hidden fixed bottom-4 left-4 right-4 bg-white/90 backdrop-blur-xl border border-slate-100 flex justify-around items-center h-16 z-[80] rounded-3xl shadow-[0_10px_40px_rgba(0,0,0,0.1)]">
         <button onClick={() => { setActiveTab('scan'); if(viewState !== 'camera') resetToScan(); }} className={`flex-1 flex flex-col items-center justify-center h-full transition-all ${activeTab === 'scan' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
           <Camera size={26} strokeWidth={activeTab === 'scan' ? 2.5 : 2} className={activeTab === 'scan' ? '-translate-y-1 transition-transform' : 'transition-transform'} />
@@ -795,14 +835,13 @@ export default function App() {
         </button>
       </nav>
 
-      {/* MAIN AREA - Conteneur global de Scan */}
+      {/* MAIN AREA */}
       <main className="flex-1 relative overflow-hidden bg-slate-900 h-full">
         
         <div className={`w-full h-full max-md:pb-24 ${activeTab === 'history' ? 'block' : 'hidden'} bg-slate-50`}>
            {renderHistory()}
         </div>
         
-        {/* La vidéo reste montée en permanence dans le DOM dès qu'on est sur l'onglet Scan */}
         <div className={`w-full h-full relative ${activeTab === 'scan' ? 'block' : 'hidden'}`}>
            <video ref={videoRef} autoPlay playsInline muted className={`absolute inset-0 w-full h-full object-cover ${(viewState === 'camera' || viewState === 'take-photo' || viewState === 'product' || viewState === 'not-found') ? 'opacity-80' : 'opacity-0'}`} />
            <canvas ref={canvasRef} className="hidden" />
@@ -811,9 +850,11 @@ export default function App() {
            {viewState === 'take-photo' && renderTakePhotoUI()}
            {viewState === 'photo-preview' && renderPhotoPreview()}
            {viewState === 'manual-entry' && renderManualEntry()}
-           {viewState === 'product' && renderProductOverlay()}
-           {viewState === 'not-found' && renderNotFoundOverlay()}
         </div>
+
+        {/* OVERLAYS GLOBAUX - Déplacés ici pour s'afficher par-dessus l'historique ! */}
+        {viewState === 'product' && renderProductOverlay()}
+        {viewState === 'not-found' && renderNotFoundOverlay()}
 
       </main>
 
