@@ -112,14 +112,14 @@ export default function App() {
     return () => clearTimeout(timerId);
   }, [manualCode, viewState, session]);
 
-  // --- NOUVEAU : RÉCUPÉRATION DE L'HISTORIQUE PAR MAGASIN ---
+  // --- RÉCUPÉRATION DE L'HISTORIQUE PAR MAGASIN ---
   const fetchHistory = async (store) => {
     if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('historique_scans')
         .select('*')
-        .eq('magasin', store) // On filtre par le magasin sélectionné et non plus par l'ID de l'utilisateur
+        .eq('magasin', store)
         .order('scanned_at', { ascending: false })
         .limit(100); 
         
@@ -147,11 +147,10 @@ export default function App() {
     }
   };
 
-  // --- NOUVEAU : ÉCOUTEUR DE CHANGEMENT DE MAGASIN ---
+  // --- ÉCOUTEUR DE CHANGEMENT DE MAGASIN ---
   useEffect(() => {
     if (selectedStore) {
       if (!supabase) {
-         // En mode test/local, on utilise une clé spécifique au magasin
          const savedHistory = localStorage.getItem(`techscan_history_${selectedStore}`);
          if (savedHistory) setHistory(JSON.parse(savedHistory));
          else setHistory([]);
@@ -161,7 +160,7 @@ export default function App() {
     } else {
       setHistory([]);
     }
-  }, [selectedStore, session]); // Se déclenche à chaque fois que l'utilisateur change de magasin dans la liste
+  }, [selectedStore, session]);
 
   // --- GESTION DE L'AUTHENTIFICATION ---
   useEffect(() => {
@@ -279,9 +278,7 @@ export default function App() {
     }
   };
 
-  // --- NOUVEAU : AJOUT DE L'AUTEUR AU SCAN ---
   const addToHistory = async (product) => {
-    // On ajoute le nom de la personne qui vient de scanner pour que tout le magasin le voie
     const scannerName = profile ? `${profile.prenom} ${profile.nom}` : 'Collaborateur inconnu';
     const productWithScannerData = { ...product, scanned_by: scannerName };
 
@@ -299,7 +296,7 @@ export default function App() {
         user_id: session.user.id,
         magasin: selectedStore,
         code_barre: product.code_barre,
-        details: productWithScannerData, // Contient le nom de l'utilisateur !
+        details: productWithScannerData,
         trouve: true
       }]);
     } catch (e) {
@@ -782,20 +779,21 @@ export default function App() {
            <ArrowLeft size={24} />
          </button>
          <div className="flex-1 relative">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+            <div className="absolute inset-y-0 left-0 pl-3.5 md:pl-4 flex items-center pointer-events-none">
                <Search size={20} className={isManualSearching ? "text-blue-500 animate-pulse" : "text-slate-400"} />
             </div>
+            {/* CORRECTION DU BUG D'ICONE : Remplacement de "p-4" par "py-4" pour ne pas écraser le padding de gauche (pl-11) */}
             <input 
               type="text" 
               autoFocus 
-              className="w-full bg-slate-100 border-none text-base md:text-lg p-3.5 md:p-4 pl-12 pr-12 outline-none font-medium text-slate-800 rounded-2xl focus:ring-2 focus:ring-blue-500 transition-shadow" 
+              className="w-full bg-slate-100 border-none text-base md:text-lg py-3.5 md:py-4 pl-11 md:pl-12 pr-12 outline-none font-medium text-slate-800 rounded-2xl focus:ring-2 focus:ring-blue-500 transition-shadow" 
               placeholder="Code, marque, désignation..." 
               value={manualCode} 
               onChange={(e) => setManualCode(e.target.value)} 
               onKeyDown={(e) => e.key === 'Enter' && handleSearch(manualCode)} 
             />
             {manualCode && (
-              <button onClick={() => { setManualCode(''); setManualSearchResults([]); }} className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 active:scale-95">
+              <button onClick={() => { setManualCode(''); setManualSearchResults([]); }} className="absolute inset-y-0 right-0 pr-3.5 md:pr-4 flex items-center text-slate-400 hover:text-slate-600 active:scale-95">
                 <X size={20} />
               </button>
             )}
@@ -894,7 +892,6 @@ export default function App() {
     </div>
   );
 
-  // --- RENDU D'UN ARTICLE (Composant réutilisable pour liste et accordéon) ---
   const renderHistoryItem = (item) => (
     <div key={item.code_barre} 
          onClick={() => { 
@@ -919,7 +916,6 @@ export default function App() {
         </h4>
         <p className="text-sm md:text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-1.5">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
         
-        {/* NOUVEAU : Affichage du collaborateur ayant scanné l'article */}
         {item.scanned_by && (
           <p className="text-[11px] md:text-xs text-slate-400 mt-1 flex items-center gap-1 font-semibold">
             <User size={12} className="shrink-0" /> Scanné par {item.scanned_by}
@@ -1164,12 +1160,10 @@ export default function App() {
            {renderHistory()}
         </div>
         
-        {/* Conteneur principal de scan gérant le Tape-to-Focus */}
         <div className={`w-full h-full relative ${activeTab === 'scan' ? 'block' : 'hidden'}`} onClick={handleCameraTap}>
            <video ref={videoRef} autoPlay playsInline muted className={`absolute inset-0 w-full h-full object-cover ${(viewState === 'camera' || viewState === 'take-photo' || viewState === 'product' || viewState === 'not-found') ? 'opacity-80' : 'opacity-0'}`} />
            <canvas ref={canvasRef} className="hidden" />
 
-           {/* Animation du Focus au moment du Tap */}
            {focusPoint && (
               <div 
                  className="absolute border-2 border-yellow-400 rounded-full z-50 pointer-events-none"
@@ -1189,7 +1183,6 @@ export default function App() {
            {viewState === 'manual-entry' && renderManualEntry()}
         </div>
 
-        {/* OVERLAYS DÉPLACÉS ICI POUR RECOUVRIR AUSSI L'HISTORIQUE ! */}
         {viewState === 'product' && renderProductOverlay()}
         {viewState === 'not-found' && renderNotFoundOverlay()}
 
