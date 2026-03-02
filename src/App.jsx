@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown, Eye, EyeOff, Trash2 } from 'lucide-react';
+import { Camera, Search, History, Zap, ZapOff, X, Check, Package, ArrowLeft, AlertCircle, User, LogOut, MapPin, Lock, ChevronDown, Eye, EyeOff, Trash2, Layers, List } from 'lucide-react';
 
 import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
-
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -42,6 +41,10 @@ export default function App() {
   
   const [focusPoint, setFocusPoint] = useState(null);
 
+  const [historyViewMode, setHistoryViewMode] = useState('list'); 
+  const [expandedGroups, setExpandedGroups] = useState({});
+  const [expandedFamilies, setExpandedFamilies] = useState({});
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -74,7 +77,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // --- MOTEUR DE RECHERCHE EN TEMPS RÉEL (DEBOUNCE) ---
+  // --- MOTEUR DE RECHERCHE EN TEMPS RÉEL ---
   useEffect(() => {
     if (viewState !== 'manual-entry' || manualCode.length < 2) {
       setManualSearchResults([]);
@@ -109,15 +112,16 @@ export default function App() {
     return () => clearTimeout(timerId);
   }, [manualCode, viewState, session]);
 
-  const fetchHistory = async (userId) => {
+  // --- NOUVEAU : RÉCUPÉRATION DE L'HISTORIQUE PAR MAGASIN ---
+  const fetchHistory = async (store) => {
     if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('historique_scans')
         .select('*')
-        .eq('user_id', userId)
+        .eq('magasin', store) // On filtre par le magasin sélectionné et non plus par l'ID de l'utilisateur
         .order('scanned_at', { ascending: false })
-        .limit(50);
+        .limit(100); 
         
       if (error) throw error;
       
@@ -143,29 +147,42 @@ export default function App() {
     }
   };
 
+  // --- NOUVEAU : ÉCOUTEUR DE CHANGEMENT DE MAGASIN ---
   useEffect(() => {
-    if (!supabase) {
-       const savedHistory = localStorage.getItem('techscan_history');
-       if (savedHistory) setHistory(JSON.parse(savedHistory));
-       return;
+    if (selectedStore) {
+      if (!supabase) {
+         // En mode test/local, on utilise une clé spécifique au magasin
+         const savedHistory = localStorage.getItem(`techscan_history_${selectedStore}`);
+         if (savedHistory) setHistory(JSON.parse(savedHistory));
+         else setHistory([]);
+      } else {
+         fetchHistory(selectedStore);
+      }
+    } else {
+      setHistory([]);
     }
+  }, [selectedStore, session]); // Se déclenche à chaque fois que l'utilisateur change de magasin dans la liste
+
+  // --- GESTION DE L'AUTHENTIFICATION ---
+  useEffect(() => {
+    if (!supabase) return;
+    
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) {
-        fetchProfile(session.user.id);
-        fetchHistory(session.user.id);
-      }
+      if (session) fetchProfile(session.user.id);
     });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (session) {
         fetchProfile(session.user.id);
-        fetchHistory(session.user.id);
       } else {
         setProfile(null);
+        setSelectedStore('');
         setHistory([]);
       }
     });
+
     return () => subscription.unsubscribe();
   }, []);
 
@@ -262,22 +279,27 @@ export default function App() {
     }
   };
 
+  // --- NOUVEAU : AJOUT DE L'AUTEUR AU SCAN ---
   const addToHistory = async (product) => {
+    // On ajoute le nom de la personne qui vient de scanner pour que tout le magasin le voie
+    const scannerName = profile ? `${profile.prenom} ${profile.nom}` : 'Collaborateur inconnu';
+    const productWithScannerData = { ...product, scanned_by: scannerName };
+
     setHistory(prevHistory => {
-      const newEntry = { ...product, scanDate: new Date().toISOString() };
-      const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 50);
-      if (!supabase) localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      const newEntry = { ...productWithScannerData, scanDate: new Date().toISOString() };
+      const newHistory = [newEntry, ...prevHistory.filter(h => h.code_barre !== product.code_barre)].slice(0, 100);
+      if (!supabase && selectedStore) localStorage.setItem(`techscan_history_${selectedStore}`, JSON.stringify(newHistory));
       return newHistory;
     });
 
-    if (!supabase || !session) return;
+    if (!supabase || !session || !selectedStore) return;
     try {
-      await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: product.code_barre });
+      await supabase.from('historique_scans').delete().match({ magasin: selectedStore, code_barre: product.code_barre });
       await supabase.from('historique_scans').insert([{
         user_id: session.user.id,
-        magasin: selectedStore || 'Inconnu',
+        magasin: selectedStore,
         code_barre: product.code_barre,
-        details: product,
+        details: productWithScannerData, // Contient le nom de l'utilisateur !
         trouve: true
       }]);
     } catch (e) {
@@ -286,24 +308,26 @@ export default function App() {
   };
 
   const clearAllHistory = async () => {
-    if (window.confirm("Voulez-vous vraiment vider tout l'historique ?")) {
+    if (!selectedStore) return;
+    if (window.confirm(`Voulez-vous vraiment vider tout l'historique partagé du magasin ${selectedStore} ?`)) {
       setHistory([]);
-      if (!supabase) localStorage.removeItem('techscan_history');
+      if (!supabase) localStorage.removeItem(`techscan_history_${selectedStore}`);
       if (supabase && session) {
-        try { await supabase.from('historique_scans').delete().eq('user_id', session.user.id); } catch(e) {}
+        try { await supabase.from('historique_scans').delete().eq('magasin', selectedStore); } catch(e) {}
       }
     }
   };
 
   const deleteFromHistory = async (codeBarre) => {
+    if (!selectedStore) return;
     setHistory(prevHistory => {
       const newHistory = prevHistory.filter(h => h.code_barre !== codeBarre);
-      if (!supabase) localStorage.setItem('techscan_history', JSON.stringify(newHistory));
+      if (!supabase) localStorage.setItem(`techscan_history_${selectedStore}`, JSON.stringify(newHistory));
       return newHistory;
     });
 
     if (supabase && session) {
-      try { await supabase.from('historique_scans').delete().match({ user_id: session.user.id, code_barre: codeBarre }); } catch(e) {}
+      try { await supabase.from('historique_scans').delete().match({ magasin: selectedStore, code_barre: codeBarre }); } catch(e) {}
     }
   };
 
@@ -329,18 +353,13 @@ export default function App() {
     setTouchStart(null); setTouchEnd(null);
   };
 
-  // --- GESTION DU TAP-TO-FOCUS ---
   const handleCameraTap = async (e) => {
-    // Ignorer si l'utilisateur a cliqué sur un bouton ou une icône par dessus la vidéo
     if (e.target.closest('button') || e.target.closest('input')) return;
 
     const containerRect = e.currentTarget.getBoundingClientRect();
-    
-    // Position relative du clic dans le conteneur
     const x = e.clientX - containerRect.left;
     const y = e.clientY - containerRect.top;
     
-    // Affiche l'animation visuelle du focus
     setFocusPoint({ x, y });
     setTimeout(() => setFocusPoint(null), 1000);
 
@@ -349,20 +368,17 @@ export default function App() {
       const track = videoRef.current.srcObject.getVideoTracks()[0];
       const capabilities = track.getCapabilities ? track.getCapabilities() : {};
 
-      // Calcul des coordonnées normalisées (0.0 à 1.0) pour l'API
       const relativeX = x / containerRect.width;
       const relativeY = y / containerRect.height;
 
       const advancedConstraints = {};
       let apply = false;
 
-      // Utiliser l'API "pointsOfInterest" si supportée (Généralement Android Chrome)
       if (capabilities.pointsOfInterest) {
         advancedConstraints.pointsOfInterest = [{ x: relativeX, y: relativeY }];
         apply = true;
       }
 
-      // Forcer un déclenchement de la mise au point "Single Shot"
       if (capabilities.focusMode && capabilities.focusMode.includes('single-shot')) {
         advancedConstraints.focusMode = 'single-shot';
         apply = true;
@@ -371,12 +387,9 @@ export default function App() {
       if (apply) {
         await track.applyConstraints({ advanced: [advancedConstraints] });
         
-        // Repasser en mode autofocus continu après la capture de la netteté
         if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
           setTimeout(async () => {
-            try { 
-               await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); 
-            } catch(err) {}
+            try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch(err) {}
           }, 2000);
         }
       }
@@ -405,16 +418,10 @@ export default function App() {
             try {
               const track = stream.getVideoTracks()[0];
               const capabilities = track.getCapabilities ? track.getCapabilities() : null;
-              
               if (capabilities && capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
-                await track.applyConstraints({
-                  advanced: [{ focusMode: 'continuous' }]
-                });
-                console.log("Autofocus continu activé");
+                await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
               }
-            } catch (focusErr) {
-              console.log("Impossible d'activer l'autofocus avancé:", focusErr);
-            }
+            } catch (focusErr) {}
             
             if ('BarcodeDetector' in window) {
               const barcodeDetector = new window.BarcodeDetector();
@@ -464,7 +471,7 @@ export default function App() {
   };
 
   const saveNewArticle = async () => {
-    if (!supabase || !session) return;
+    if (!supabase || !session || !selectedStore) return;
     setIsUploading(true);
 
     try {
@@ -887,70 +894,171 @@ export default function App() {
     </div>
   );
 
-  const renderHistory = () => (
-    <div className="w-full h-full bg-slate-50 flex flex-col relative z-10 pb-16 md:pb-0">
-      <div className="bg-white p-5 md:p-6 shadow-sm sticky top-0 flex items-center justify-between border-b border-slate-100 shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-2"><History className="text-blue-600" size={28} /> Historique</h2>
-        </div>
-        {history.length > 0 && (
-          <button onClick={clearAllHistory} className="p-2 md:p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center justify-center shrink-0 active:bg-red-100" title="Vider l'historique">
-            <Trash2 size={22} />
-          </button>
+  // --- RENDU D'UN ARTICLE (Composant réutilisable pour liste et accordéon) ---
+  const renderHistoryItem = (item) => (
+    <div key={item.code_barre} 
+         onClick={() => { 
+            setCurrentProduct(item); 
+            setIsProductExpanded(true); 
+            setViewState('product'); 
+         }} 
+         className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 md:gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
+      
+      <div className="w-16 h-16 md:w-20 md:h-20 bg-white border border-slate-100 rounded-xl md:rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
+         <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
+      </div>
+      
+      <div className="flex-1 min-w-0">
+        <h4 className="text-lg md:text-xl font-bold text-slate-800 truncate mb-0.5 flex items-center gap-2">
+          {item.designation || 'Article'}
+          {item.statut === 'En attente' && (
+            <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-orange-100 text-orange-600 border border-orange-200 uppercase tracking-wider">
+              Création
+            </span>
+          )}
+        </h4>
+        <p className="text-sm md:text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-1.5">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
+        
+        {/* NOUVEAU : Affichage du collaborateur ayant scanné l'article */}
+        {item.scanned_by && (
+          <p className="text-[11px] md:text-xs text-slate-400 mt-1 flex items-center gap-1 font-semibold">
+            <User size={12} className="shrink-0" /> Scanné par {item.scanned_by}
+          </p>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-3 md:space-y-4">
-        {history.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-slate-400 pb-20">
-            <Package size={64} className="mb-4 opacity-30" />
-            <p className="text-lg font-bold">Aucun article scanné</p>
-          </div>
-        ) : (
-          history.map((item) => (
-            <div key={item.code_barre} 
-                 onClick={() => { 
-                    setCurrentProduct(item); 
-                    setIsProductExpanded(true); 
-                    setViewState('product'); 
-                 }} 
-                 className="bg-white p-4 md:p-5 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 md:gap-4 cursor-pointer hover:shadow-md transition-all active:scale-[0.98]">
-              
-              <div className="w-16 h-16 md:w-20 md:h-20 bg-white border border-slate-100 rounded-xl md:rounded-2xl p-1 flex items-center justify-center shrink-0 shadow-sm relative">
-                 <img src={item.image_reference || item.photo || 'https://images.unsplash.com/photo-1586772002130-b0f3daa6288b?auto=format&fit=crop&q=80&w=100'} alt="..." className="max-w-full max-h-full object-contain rounded-lg" />
-              </div>
-              
-              <div className="flex-1 min-w-0">
-                <h4 className="text-lg md:text-xl font-bold text-slate-800 truncate mb-0.5 flex items-center gap-2">
-                  {item.designation || 'Article'}
-                  {item.statut === 'En attente' && (
-                    <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-orange-100 text-orange-600 border border-orange-200 uppercase tracking-wider">
-                      Création
-                    </span>
-                  )}
-                </h4>
-                <p className="text-sm md:text-md text-slate-500 font-medium truncate">{item.marque || 'Marque N/A'} <span className="text-slate-300 mx-1.5">•</span> {item.reference_fabricant || 'Réf N/A'}</p>
-              </div>
 
-              {/* BOUTON SUPPRIMER DÉDIÉ (remplace l'appui long) */}
-              <button 
-                 onClick={(e) => {
-                    e.stopPropagation(); // Évite d'ouvrir la fiche quand on clique sur supprimer
-                    if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique ?`)) {
-                       deleteFromHistory(item.code_barre);
-                    }
-                 }}
-                 className="p-2.5 md:p-3 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors active:bg-red-100 shrink-0"
-                 title="Supprimer de l'historique"
-              >
-                 <Trash2 size={20} />
-              </button>
-
-            </div>
-          ))
-        )}
-      </div>
+      <button 
+         onClick={(e) => {
+            e.stopPropagation(); 
+            if (window.confirm(`Supprimer "${item.designation || item.code_barre}" de l'historique du magasin ${selectedStore} ?`)) {
+               deleteFromHistory(item.code_barre);
+            }
+         }}
+         className="p-2.5 md:p-3 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors active:bg-red-100 shrink-0"
+         title="Supprimer de l'historique"
+      >
+         <Trash2 size={20} />
+      </button>
     </div>
   );
+
+  const toggleGroup = (group) => setExpandedGroups(prev => ({ ...prev, [group]: !prev[group] }));
+  const toggleFamily = (group, family) => {
+    const key = `${group}-${family}`;
+    setExpandedFamilies(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const getGroupedHistory = () => {
+    return history.reduce((acc, item) => {
+      const g = item.groupe || 'Non classé';
+      const f = item.famille || 'Général';
+      if (!acc[g]) acc[g] = {};
+      if (!acc[g][f]) acc[g][f] = [];
+      acc[g][f].push(item);
+      return acc;
+    }, {});
+  };
+
+  const renderHistory = () => {
+    const groupedData = historyViewMode === 'grouped' ? getGroupedHistory() : null;
+
+    return (
+      <div className="w-full h-full bg-slate-50 flex flex-col relative z-10 pb-16 md:pb-0">
+        <div className="bg-white p-4 md:p-6 shadow-sm sticky top-0 flex items-center justify-between border-b border-slate-100 shrink-0 z-20">
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-2">
+               <History className="text-blue-600" size={28} /> Historique 
+               <span className="hidden md:inline text-slate-300 mx-2">|</span> 
+               <span className="hidden md:inline text-lg text-slate-500 font-semibold">{selectedStore}</span>
+            </h2>
+          </div>
+          
+          <div className="flex items-center gap-2 md:gap-4">
+            <div className="flex bg-slate-100 p-1 rounded-xl">
+               <button 
+                 onClick={() => setHistoryViewMode('list')} 
+                 className={`p-2 md:p-2.5 rounded-lg flex items-center justify-center transition-all ${historyViewMode === 'list' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                 title="Vue chronologique"
+               >
+                 <List size={20} />
+               </button>
+               <button 
+                 onClick={() => setHistoryViewMode('grouped')} 
+                 className={`p-2 md:p-2.5 rounded-lg flex items-center justify-center transition-all ${historyViewMode === 'grouped' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                 title="Vue par catégories"
+               >
+                 <Layers size={20} />
+               </button>
+            </div>
+
+            {history.length > 0 && (
+              <button onClick={clearAllHistory} className="p-2.5 md:p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center justify-center shrink-0 active:bg-red-100" title="Vider l'historique">
+                <Trash2 size={22} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-3 md:space-y-4">
+          {history.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 pb-20">
+              <Package size={64} className="mb-4 opacity-30" />
+              <p className="text-lg font-bold text-center">Aucun article scanné<br/><span className="text-sm font-normal">pour le magasin {selectedStore}</span></p>
+            </div>
+          ) : historyViewMode === 'list' ? (
+            history.map(renderHistoryItem)
+          ) : (
+            <div className="space-y-4 pb-8">
+              {Object.keys(groupedData).sort().map(group => {
+                const groupItemCount = Object.values(groupedData[group]).flat().length;
+                return (
+                  <div key={group} className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                    <button onClick={() => toggleGroup(group)} className="w-full p-4 flex items-center justify-between bg-white hover:bg-slate-50 transition-colors active:bg-slate-100">
+                      <div className="flex items-center gap-3">
+                         <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
+                            <Layers size={20} />
+                         </div>
+                         <span className="font-bold text-slate-800 text-lg md:text-xl text-left">{group}</span>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                         <span className="bg-slate-100 text-slate-600 text-sm font-bold px-3 py-1 rounded-full">{groupItemCount}</span>
+                         <ChevronDown size={24} className={`text-slate-400 transition-transform ${expandedGroups[group] ? '' : '-rotate-90'}`} />
+                      </div>
+                    </button>
+                    
+                    {expandedGroups[group] && (
+                      <div className="p-3 pt-0 space-y-3 bg-slate-50/50">
+                        {Object.keys(groupedData[group]).sort().map(family => {
+                           const familyKey = `${group}-${family}`;
+                           const familyItems = groupedData[group][family];
+                           return (
+                             <div key={familyKey} className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-sm">
+                               <button onClick={() => toggleFamily(group, family)} className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors active:bg-slate-100">
+                                 <span className="font-bold text-slate-700 text-md pl-1">{family}</span>
+                                 <div className="flex items-center gap-3">
+                                   <span className="bg-blue-50 text-blue-700 text-xs font-bold px-2.5 py-1 rounded-full">{familyItems.length}</span>
+                                   <ChevronDown size={20} className={`text-slate-400 transition-transform ${expandedFamilies[familyKey] ? '' : '-rotate-90'}`} />
+                                 </div>
+                               </button>
+                               {expandedFamilies[familyKey] && (
+                                 <div className="p-2 space-y-2 bg-slate-50 border-t border-slate-100">
+                                   {familyItems.map(renderHistoryItem)}
+                                 </div>
+                               )}
+                             </div>
+                           );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-[100dvh] w-full bg-slate-900 font-sans text-slate-900 overflow-hidden flex-col md:flex-row relative">
